@@ -9,7 +9,7 @@
             <DockPanel Margin="18">
                 <StackPanel DockPanel.Dock="Top">
                     <TextBlock Text="記憶體管理器" FontSize="22" FontWeight="SemiBold"/>
-                    <TextBlock Text="beta.28 · Ray20123315" Foreground="{DynamicResource Muted}" Margin="0,2,0,20"/>
+                    <TextBlock Text="beta.29 dev · Ray20123315" Foreground="{DynamicResource Muted}" Margin="0,2,0,20"/>
                     <Button Content="總覽" Tag="dashboard" Click="Nav_Click"/>
                     <Button Content="程式" Tag="processes" Click="Nav_Click"/>
                     <Button Content="通知" Tag="notifications" Click="Nav_Click"/>
@@ -37,17 +37,24 @@
                     <Border x:Name="EmergencyCard" Background="{DynamicResource Panel}" Padding="20" Margin="4,14,4,4" CornerRadius="12">
                         <StackPanel><TextBlock Text="目前狀態" FontSize="18" FontWeight="SemiBold"/><TextBlock x:Name="HealthText" Text="正在分析…" FontSize="24" Margin="0,8,0,4"/><TextBlock x:Name="AdvisorText" Text="—" Foreground="{DynamicResource Muted}" TextWrapping="Wrap"/></StackPanel>
                     </Border>
+                    <Border x:Name="EmergencyActionsCard" Visibility="Collapsed" Background="#211416" BorderBrush="#63363B" BorderThickness="1" Padding="20" Margin="4,8,4,4" CornerRadius="12">
+                        <StackPanel>
+                            <TextBlock Text="Emergency Rescue（救援面板）" FontSize="18" FontWeight="SemiBold"/>
+                            <TextBlock Text="這裡不會自動亂殺程式。先看最大用量、正常關閉一般程式，必要時再開工作管理員。" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,6,0,10"/>
+                            <StackPanel Orientation="Horizontal"><Button Content="查看程式清單" Click="OpenProcesses_Click"/><Button Content="開啟工作管理員" Click="OpenTaskManager_Click"/><Button Content="匯出事故資料" Click="ExportIncident_Click"/></StackPanel>
+                        </StackPanel>
+                    </Border>
                     <Border Background="{DynamicResource Panel}" Padding="20" Margin="4,14,4,4" CornerRadius="12">
-                        <StackPanel><TextBlock Text="Page File / Commit Headroom" FontSize="18" FontWeight="SemiBold"/><ProgressBar x:Name="CommitBar" Height="14" Minimum="0" Maximum="100" Margin="0,12,0,8"/><TextBlock x:Name="CommitDetailText" Foreground="{DynamicResource Muted}"/></StackPanel>
+                        <StackPanel><TextBlock Text="Page File / Commit Headroom" FontSize="18" FontWeight="SemiBold"/><ProgressBar x:Name="CommitBar" Height="14" Minimum="0" Maximum="100" Margin="0,12,0,8"/><TextBlock x:Name="CommitDetailText" Foreground="{DynamicResource Muted}"/><TextBlock x:Name="PageFileText" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0"/></StackPanel>
                     </Border>
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0"><Button Content="匯出事故資料" Click="ExportIncident_Click"/><Button Content="立即檢查更新" Click="CheckUpdate_Click"/></StackPanel>
                 </StackPanel></ScrollViewer>
             </Grid>
             <Grid x:Name="ProcessesPage" Visibility="Collapsed">
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                <StackPanel><TextBlock Text="程式" FontSize="32" FontWeight="SemiBold"/><TextBlock Text="大型程式與最近的記憶體變化，優先顯示給你看。" Foreground="{DynamicResource Muted}"/><Button Content="重新整理" HorizontalAlignment="Left" Click="RefreshProcesses_Click"/></StackPanel>
+                <StackPanel><TextBlock Text="程式" FontSize="32" FontWeight="SemiBold"/><TextBlock Text="Commit 是 Windows 真正為程式承諾的私人記憶體；Δ 則看最近變大或變小多少。" Foreground="{DynamicResource Muted}"/><Button Content="重新整理" HorizontalAlignment="Left" Click="RefreshProcesses_Click"/></StackPanel>
                 <DataGrid Grid.Row="1" x:Name="ProcessGrid" AutoGenerateColumns="False" IsReadOnly="True" Margin="0,14" Background="{DynamicResource Panel}">
-                    <DataGrid.Columns><DataGridTextColumn Header="程式" Binding="{Binding Name}" Width="2*"/><DataGridTextColumn Header="PID" Binding="{Binding Pid}"/><DataGridTextColumn Header="Working Set" Binding="{Binding WorkingSetText}"/><DataGridTextColumn Header="Private" Binding="{Binding PrivateText}"/><DataGridTextColumn Header="Δ" Binding="{Binding DeltaText}"/><DataGridTextColumn Header="判斷" Binding="{Binding Risk}" Width="*"/></DataGrid.Columns>
+                    <DataGrid.Columns><DataGridTextColumn Header="程式" Binding="{Binding Name}" Width="2*"/><DataGridTextColumn Header="PID" Binding="{Binding Pid}"/><DataGridTextColumn Header="Working Set" Binding="{Binding WorkingSetText}"/><DataGridTextColumn Header="Private" Binding="{Binding PrivateText}"/><DataGridTextColumn Header="Commit" Binding="{Binding CommitText}"/><DataGridTextColumn Header="Commit Δ" Binding="{Binding DeltaText}"/><DataGridTextColumn Header="判斷" Binding="{Binding Risk}" Width="*"/></DataGrid.Columns>
                 </DataGrid>
                 <TextBlock Grid.Row="2" x:Name="ProcessAdviceText" TextWrapping="Wrap" Foreground="{DynamicResource Muted}"/>
             </Grid>
@@ -64,11 +71,13 @@
             <Grid x:Name="SettingsPage" Visibility="Collapsed">
                 <StackPanel><TextBlock Text="設定" FontSize="32" FontWeight="SemiBold"/><TextBlock Text="進階選項仍會用白話說明，不需要懂 Windows 核心名詞。" Foreground="{DynamicResource Muted}" Margin="0,4,0,18"/>
                     <TextBlock Text="資料取樣間隔" FontSize="16"/><ComboBox x:Name="SampleCombo" Width="220" HorizontalAlignment="Left" SelectionChanged="SampleCombo_SelectionChanged"><ComboBoxItem Content="1 ms"/><ComboBoxItem Content="2 ms"/><ComboBoxItem Content="5 ms"/><ComboBoxItem Content="10 ms" IsSelected="True"/><ComboBoxItem Content="16 ms"/><ComboBoxItem Content="33 ms"/><ComboBoxItem Content="100 ms"/></ComboBox><TextBlock Text="1 ms 是要求頻率，不代表 Windows 保證精準 1000 次/秒。" Foreground="{DynamicResource Muted}"/>
-                    <TextBlock Text="畫面更新頻率" FontSize="16" Margin="0,18,0,0"/><ComboBox x:Name="UiCombo" Width="220" HorizontalAlignment="Left" SelectionChanged="UiCombo_SelectionChanged"><ComboBoxItem Content="Auto (250 ms)" IsSelected="True"/><ComboBoxItem Content="16 ms"/><ComboBoxItem Content="33 ms"/><ComboBoxItem Content="100 ms"/><ComboBoxItem Content="250 ms"/></ComboBox><TextBlock Text="資料可以很快取樣，但畫面不用每 1 ms 重畫。" Foreground="{DynamicResource Muted}"/>
+                    <CheckBox x:Name="AdaptiveRefreshCheck" IsChecked="True" Content="自動調整畫面更新速度（建議）" Foreground="{DynamicResource Text}" Margin="0,18,0,4"/>
+                    <TextBlock Text="手動畫面更新頻率（關閉自動時使用）" FontSize="16"/><ComboBox x:Name="UiCombo" Width="220" HorizontalAlignment="Left" SelectionChanged="UiCombo_SelectionChanged"><ComboBoxItem Content="16 ms"/><ComboBoxItem Content="33 ms"/><ComboBoxItem Content="100 ms"/><ComboBoxItem Content="250 ms" IsSelected="True"/><ComboBoxItem Content="500 ms"/></ComboBox><TextBlock x:Name="AdaptiveExplainText" Text="一般狀態：平衡即時性與耗電。" Foreground="{DynamicResource Muted}"/>
+                    <TextBlock Text="外觀" FontSize="16" Margin="0,18,0,0"/><ComboBox x:Name="ThemeCombo" Width="220" HorizontalAlignment="Left" SelectionChanged="ThemeCombo_SelectionChanged"><ComboBoxItem Content="深色" IsSelected="True"/><ComboBoxItem Content="淺色"/></ComboBox>
                     <CheckBox x:Name="UpdateNotifyCheck" IsChecked="True" Content="背景檢查新版並顯示通知" Foreground="{DynamicResource Text}" Margin="0,18,0,0"/>
                 </StackPanel>
             </Grid>
-            <Grid x:Name="AboutPage" Visibility="Collapsed"><StackPanel><TextBlock Text="關於" FontSize="32" FontWeight="SemiBold"/><TextBlock Text="Memory Manager v0.9.0-beta.28" FontSize="20" Margin="0,18,0,4"/><TextBlock Text="Ray20123315 · Windows 11 · local-first" Foreground="{DynamicResource Muted}"/><TextBlock Text="Release 會附上 EXE、真正安裝器與 SHA-256。可信公開簽章需要正式 Code Signing provider；沒有憑證時不會假裝已簽章。" TextWrapping="Wrap" Margin="0,18,0,0"/></StackPanel></Grid>
+            <Grid x:Name="AboutPage" Visibility="Collapsed"><StackPanel><TextBlock Text="關於" FontSize="32" FontWeight="SemiBold"/><TextBlock Text="Memory Manager v0.9.0-beta.29 dev" FontSize="20" Margin="0,18,0,4"/><TextBlock Text="Ray20123315 · Windows 11 · local-first" Foreground="{DynamicResource Muted}"/><TextBlock Text="beta.28 是已驗證基線；目前 main 正在補齊完整功能。可信公開簽章需要正式 Code Signing provider，沒有憑證時不會假裝已簽章。" TextWrapping="Wrap" Margin="0,18,0,0"/></StackPanel></Grid>
         </Grid>
     </Grid>
 </Window>
