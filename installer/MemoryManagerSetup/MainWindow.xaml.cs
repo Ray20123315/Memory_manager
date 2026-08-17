@@ -1,71 +1,61 @@
-using Microsoft.Win32;
-using System;
 using System.Diagnostics;
-using System.IO;
-using System.Reflection;
 using System.Threading.Tasks;
 using System.Windows;
 
 namespace Ray.MemoryManagerSetup;
+
 public partial class MainWindow : Window
 {
-    readonly string installDir=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Programs","Ray20123315","Memory Manager");
-    string AppExe=>Path.Combine(installDir,"MemoryManager.exe");
-    string Uninstaller=>Path.Combine(installDir,"MemoryManagerSetup.exe");
-    public MainWindow(){InitializeComponent();PathText.Text=installDir;UninstallButton.IsEnabled=File.Exists(AppExe);}
+    readonly InstallerService _installer = new();
+    readonly string installDir = InstallerService.DefaultInstallDir;
+    string AppExe => _installer.AppExe(installDir);
 
-    async void Install_Click(object s,RoutedEventArgs e)
+    public MainWindow()
     {
-        SetBusy(true,"正在安裝…");
-        try
-        {
-            Directory.CreateDirectory(installDir); Progress.Value=15;
-            using var input=Assembly.GetExecutingAssembly().GetManifestResourceStream("MemoryManager.exe") ?? throw new InvalidOperationException("安裝包內沒有 MemoryManager.exe");
-            using(var output=File.Create(AppExe)){await input.CopyToAsync(output);} Progress.Value=50;
-            if(!string.Equals(Environment.ProcessPath,Uninstaller,StringComparison.OrdinalIgnoreCase)) File.Copy(Environment.ProcessPath!,Uninstaller,true); Progress.Value=65;
-            CreateShortcut(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),"Programs","Memory Manager.lnk"),AppExe);
-            if(DesktopCheck.IsChecked==true)CreateShortcut(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),"Memory Manager.lnk"),AppExe); Progress.Value=80;
-            using(var key=Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\RayMemoryManager")){
-                key.SetValue("DisplayName","Memory Manager / 記憶體管理器"); key.SetValue("DisplayVersion","0.9.0-beta.28"); key.SetValue("Publisher","Ray20123315"); key.SetValue("InstallLocation",installDir); key.SetValue("DisplayIcon",AppExe); key.SetValue("UninstallString",$"\"{Uninstaller}\" --uninstall"); key.SetValue("QuietUninstallString",$"\"{Uninstaller}\" --uninstall --quiet");
-            }
-            Progress.Value=100; StatusText.Text="安裝完成。Windows 已有真正的程式檔、捷徑與解除安裝項目。"; UninstallButton.IsEnabled=true;
-            if(System.Windows.MessageBox.Show("安裝完成，要現在開啟 Memory Manager 嗎？","完成",MessageBoxButton.YesNo)==MessageBoxResult.Yes)Process.Start(new ProcessStartInfo(AppExe){UseShellExecute=true});
-        }catch(Exception ex){StatusText.Text="安裝失敗："+ex.Message;System.Windows.MessageBox.Show(StatusText.Text,"安裝失敗");}
-        finally{SetBusy(false,StatusText.Text);}
+        InitializeComponent();
+        PathText.Text = installDir;
+        UninstallButton.IsEnabled = File.Exists(AppExe);
+        StatusText.Text = File.Exists(AppExe) ? "已偵測到現有安裝；按「安裝 / 修復」會原子替換程式檔。" : "尚未安裝。";
     }
 
-    async void Uninstall_Click(object s,RoutedEventArgs e)
+    async void Install_Click(object s, RoutedEventArgs e)
     {
-        if(System.Windows.MessageBox.Show("確定解除安裝 Memory Manager？Log 與診斷資料會保留，避免誤刪你的除錯紀錄。","解除安裝",MessageBoxButton.YesNo)!=MessageBoxResult.Yes)return;
+        SetBusy(true, "正在安裝 / 修復…");
+        Progress.Value = 20;
+        var result = await Task.Run(() => _installer.InstallOrRepair(installDir, DesktopCheck.IsChecked == true, integrateShell: true));
+        Progress.Value = result.Ok ? 100 : 0;
+        StatusText.Text = result.Message;
+        SetBusy(false, StatusText.Text);
+        UninstallButton.IsEnabled = File.Exists(AppExe);
+        if (!result.Ok) { MessageBox.Show(result.Message, "安裝失敗"); return; }
+        if (MessageBox.Show("安裝 / 修復完成，要現在開啟 Memory Manager 嗎？", "完成", MessageBoxButton.YesNo) == MessageBoxResult.Yes)
+            Process.Start(new ProcessStartInfo(AppExe) { UseShellExecute = true });
+    }
+
+    async void Uninstall_Click(object s, RoutedEventArgs e)
+    {
+        if (MessageBox.Show("確定解除安裝 Memory Manager？Log、事故紀錄與設定備份會保留，避免誤刪診斷資料。", "解除安裝", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
         await Uninstall();
     }
 
-    public async Task Uninstall(bool quiet=false)
+    public async Task Uninstall(bool quiet = false)
     {
-        SetBusy(true,"正在解除安裝…");
-        try
-        {
-            TryDelete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),"Programs","Memory Manager.lnk"));
-            TryDelete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),"Memory Manager.lnk"));
-            Registry.CurrentUser.DeleteSubKeyTree(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\RayMemoryManager",false);
-            var self=Environment.ProcessPath!; var dir=installDir; Progress.Value=90;
-            if(self.StartsWith(dir,StringComparison.OrdinalIgnoreCase)){
-                Process.Start(new ProcessStartInfo("cmd.exe",$"/c timeout /t 2 /nobreak >nul & rmdir /s /q \"{dir}\""){CreateNoWindow=true,UseShellExecute=false});
-                System.Windows.Application.Current.Shutdown(); return;
-            }
-            if(Directory.Exists(dir))Directory.Delete(dir,true); Progress.Value=100; StatusText.Text="解除安裝完成。";
-            if(!quiet)System.Windows.MessageBox.Show("解除安裝完成。Log 與診斷資料依照安全策略保留。","完成");
-        }catch(Exception ex){StatusText.Text="解除安裝失敗："+ex.Message;if(!quiet)System.Windows.MessageBox.Show(StatusText.Text,"失敗");}
-        finally{SetBusy(false,StatusText.Text);}
-        await Task.CompletedTask;
+        SetBusy(true, "正在解除安裝…");
+        Progress.Value = 30;
+        var result = await Task.Run(() => _installer.Uninstall(installDir, integrateShell: true));
+        Progress.Value = result.Ok ? 100 : 0;
+        StatusText.Text = result.Message;
+        SetBusy(false, StatusText.Text);
+        if (!quiet && result.Ok) MessageBox.Show("解除安裝流程完成。Log、事故紀錄與設定備份依安全策略保留。", "完成");
+        if (!quiet && !result.Ok) MessageBox.Show(result.Message, "失敗");
+        if (result.Ok && (Environment.ProcessPath ?? string.Empty).StartsWith(installDir, StringComparison.OrdinalIgnoreCase))
+            System.Windows.Application.Current.Shutdown();
     }
 
-    static void CreateShortcut(string path,string target)
+    void SetBusy(bool busy, string text)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var shellType=Type.GetTypeFromProgID("WScript.Shell") ?? throw new InvalidOperationException("無法使用 Windows Shortcut API");
-        dynamic shell=Activator.CreateInstance(shellType)!; dynamic link=shell.CreateShortcut(path); link.TargetPath=target; link.WorkingDirectory=Path.GetDirectoryName(target); link.IconLocation=target+",0"; link.Save();
+        InstallButton.IsEnabled = !busy;
+        UninstallButton.IsEnabled = !busy && File.Exists(AppExe);
+        StatusText.Text = text;
     }
-    static void TryDelete(string p){try{if(File.Exists(p))File.Delete(p);}catch{}}
-    void SetBusy(bool busy,string text){InstallButton.IsEnabled=!busy;UninstallButton.IsEnabled=!busy && File.Exists(AppExe);StatusText.Text=text;}
 }
