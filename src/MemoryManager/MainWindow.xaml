@@ -5,7 +5,7 @@
         Background="{DynamicResource Bg}" Foreground="{DynamicResource Text}">
     <Grid>
         <Grid.ColumnDefinitions><ColumnDefinition Width="230"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-        <Border Background="#0C111B" BorderBrush="#1D2636" BorderThickness="0,0,1,0">
+        <Border Background="{DynamicResource Side}" BorderBrush="{DynamicResource Outline}" BorderThickness="0,0,1,0">
             <DockPanel Margin="18">
                 <StackPanel DockPanel.Dock="Top">
                     <TextBlock Text="記憶體管理器" FontSize="22" FontWeight="SemiBold"/>
