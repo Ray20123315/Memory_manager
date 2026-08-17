@@ -8,7 +8,7 @@ on:
 permissions:
   contents: write
 concurrency:
-  group: beta29-release
+  group: beta28-release
   cancel-in-progress: true
 jobs:
   build-release:
