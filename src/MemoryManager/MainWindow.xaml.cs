@@ -23,17 +23,25 @@ public partial class MainWindow : Window
     readonly WindowsEventLogService _eventLogs = new();
     readonly PreviousCrashAnalyzer _crashAnalyzer = new();
     readonly SessionStateService _session = new();
+    readonly ForegroundProcessService _foreground = new();
+    readonly GameProfileService _gameProfiles = new();
+    readonly PerAppMemoryRuleService _memoryRules = new();
+    readonly ProcessMemoryPriorityService _memoryPriority = new();
+    readonly GameMemoryReserveEngine _gameReserve;
     readonly DispatcherTimer _uiTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     readonly DispatcherTimer _updateTimer = new() { Interval = TimeSpan.FromMinutes(30) };
     DateTimeOffset _lastProcessRefresh = DateTimeOffset.MinValue;
     DateTimeOffset _lastPageFileRefresh = DateTimeOffset.MinValue;
+    DateTimeOffset _lastGamePolicyRefresh = DateTimeOffset.MinValue;
     PageFileHealth? _pageFileHealth;
     EventLogReadResult? _incidentRead;
     CrashAnalysis? _lastCrashAnalysis;
+    GameReserveSnapshot? _gameSnapshot;
 
     public MainWindow()
     {
         InitializeComponent();
+        _gameReserve = new GameMemoryReserveEngine(_processes, _foreground, _gameProfiles, _memoryRules, _memoryPriority);
         NotificationList.ItemsSource = _notifications.Items;
         _telemetry.Sampled += s => _flight.Add(s);
         _telemetry.Start(10);
@@ -44,17 +52,19 @@ public partial class MainWindow : Window
 
         RefreshPageFileHealth();
         Record("啟動", "Memory Manager 已啟動，主視窗預設最大化。");
-        _notifications.Add("beta.29 開發版", "已加入事故時間線、Previous Crash Analyzer、Reliability History 與可跨當機保留的 Flight Recorder V2。", "feature");
+        _notifications.Add("beta.29 開發版", "已加入事故分析，以及預設關閉、可還原的 Game Memory Reserve V2 / Per-App Memory Rules。", "feature");
         Loaded += async (_, _) =>
         {
             RefreshProcesses();
             RefreshLogs();
+            RefreshGameRules();
             RefreshDashboard();
             RefreshIncidents();
             await CheckUpdatesQuietly();
         };
         Closed += (_, _) =>
         {
+            _gameReserve.Dispose();
             _flight.RecordAction("session", "graceful-exit");
             _session.MarkGracefulExit();
             _session.Dispose();
@@ -67,12 +77,13 @@ public partial class MainWindow : Window
 
     void ShowPage(string? tag)
     {
-        foreach (var g in new[] { DashboardPage, ProcessesPage, NotificationsPage, LogsPage, IncidentsPage, SettingsPage, AboutPage })
+        foreach (var g in new[] { DashboardPage, ProcessesPage, GameRulesPage, NotificationsPage, LogsPage, IncidentsPage, SettingsPage, AboutPage })
             g.Visibility = Visibility.Collapsed;
 
         (tag switch
         {
             "processes" => ProcessesPage,
+            "game" => GameRulesPage,
             "notifications" => NotificationsPage,
             "logs" => LogsPage,
             "incidents" => IncidentsPage,
@@ -83,6 +94,7 @@ public partial class MainWindow : Window
 
         if (tag == "logs") RefreshLogs();
         if (tag == "processes") RefreshProcesses();
+        if (tag == "game") RefreshGameRules();
         if (tag == "incidents") RefreshIncidents();
     }
 
@@ -122,10 +134,13 @@ public partial class MainWindow : Window
             EmergencyActionsCard.Visibility = Visibility.Collapsed;
         }
 
+        if (DateTimeOffset.Now - _lastGamePolicyRefresh > TimeSpan.FromSeconds(5)) RefreshGameRules();
+
         if (AdaptiveRefreshCheck.IsChecked == true)
         {
             var visible = IsVisible && WindowState != System.Windows.WindowState.Minimized;
-            var ms = _adaptive.ChooseUiIntervalMs(visible, IsActive, gameMode: false, s);
+            var gameMode = _gameSnapshot?.ActiveGames.Count > 0;
+            var ms = _adaptive.ChooseUiIntervalMs(visible, IsActive, gameMode, s);
             if ((int)_uiTimer.Interval.TotalMilliseconds != ms)
                 _uiTimer.Interval = TimeSpan.FromMilliseconds(ms);
             AdaptiveExplainText.Text = _adaptive.Explain(ms);
@@ -154,6 +169,118 @@ public partial class MainWindow : Window
         ProcessGrid.ItemsSource = rows;
         ProcessAdviceText.Text = _processes.SafeCloseAdvice(rows);
         AdvisorText.Text = ProcessAdviceText.Text;
+    }
+
+    void AddSelectedProcessRule_Click(object s, RoutedEventArgs e)
+    {
+        if (ProcessGrid.SelectedItem is not ProcessMemoryRow row)
+        {
+            _notifications.Add("尚未選擇程式", "先在程式頁點一個一般背景 App，再加入規則。", "info");
+            return;
+        }
+
+        var foreground = _foreground.GetForegroundProcess();
+        var gameNames = _gameProfiles.Profiles.Where(x => x.Enabled).Select(x => x.ProcessName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var protection = new GameMemorySafetyPolicy(_processes).Classify(row.Pid, row.Name, foreground.Pid, gameNames);
+        if (protection.Protected)
+        {
+            _notifications.Add("這個程式不建立 Memory Rule", $"{row.Name} 被保護：{protection.Reason}。", "warn");
+            Record("遊戲", $"拒絕為 {row.Name} 建立規則：{protection.Reason}");
+            return;
+        }
+
+        var rule = _memoryRules.AddOrEnable(row.Name, idleMinutes: 15, minCommitMb: 512, targetMemoryPriority: 2);
+        Record("遊戲", $"建立背景規則：{rule}");
+        _notifications.Add("已建立背景 Memory Rule", $"{row.Name}：背景 15 分鐘且 Commit ≥ 512 MB 時，才可暫時降到 Memory Priority 2。總開關仍由你控制。", "feature");
+        RefreshGameRules();
+        ShowPage("game");
+    }
+
+    void RefreshGameRules_Click(object s, RoutedEventArgs e) => RefreshGameRules();
+
+    void RefreshGameRules()
+    {
+        try
+        {
+            _gameSnapshot = _gameReserve.Evaluate(GameMemoryMasterCheck.IsChecked == true, GameAutoDetectCheck.IsChecked == true);
+            _lastGamePolicyRefresh = DateTimeOffset.Now;
+            GameForegroundText.Text = "前景程式：" + (string.IsNullOrWhiteSpace(_gameSnapshot.Foreground) ? "無法判定" : _gameSnapshot.Foreground);
+            GameSummaryText.Text = _gameSnapshot.GameSummary;
+            var applied = _gameSnapshot.Decisions.Count(x => x.State == "已套用");
+            GamePolicyStateText.Text = GameMemoryMasterCheck.IsChecked == true
+                ? $"規則總開關：啟用 · 目前暫時修改 {applied} 個 Process；不符合條件或被保護者保持原狀。"
+                : "規則總開關：停用 · 所有暫時 Memory Priority 修改都要求還原。";
+            GameProfileList.ItemsSource = _gameProfiles.Profiles.ToList();
+            MemoryRuleList.ItemsSource = _memoryRules.Rules.ToList();
+            GameDecisionList.ItemsSource = _gameSnapshot.Decisions.Select(x => x.ToString()).ToList();
+        }
+        catch (Exception ex)
+        {
+            _gameReserve.Dispose();
+            GamePolicyStateText.Text = "規則評估失敗；已要求還原所有暫時修改。";
+            Record("錯誤", "Game Memory Reserve 評估失敗：" + ex.Message);
+            _notifications.Add("Game Memory Reserve 已安全停止", "評估時發生錯誤，已要求還原所有暫時 Memory Priority 修改。", "warn");
+        }
+    }
+
+    void GameMemoryMasterCheck_Click(object s, RoutedEventArgs e)
+    {
+        RefreshGameRules();
+        Record("遊戲", GameMemoryMasterCheck.IsChecked == true ? "使用者啟用背景 Memory Rule 總開關。" : "使用者停用背景 Memory Rule；要求立即還原。" );
+    }
+
+    void GameAutoDetectCheck_Click(object s, RoutedEventArgs e)
+    {
+        RefreshGameRules();
+        Record("遊戲", "遊戲路徑自動偵測=" + (GameAutoDetectCheck.IsChecked == true ? "on" : "off"));
+    }
+
+    void AddForegroundGameProfile_Click(object s, RoutedEventArgs e)
+    {
+        try
+        {
+            var foreground = _foreground.GetForegroundProcess();
+            var profile = _gameProfiles.AddManual(foreground);
+            Record("遊戲", $"加入遊戲 Profile：{profile.ProcessName}");
+            _notifications.Add("遊戲 Profile 已加入", $"{profile.ProcessName} 執行時會列入保護，不會被背景 Memory Rule 降低 Priority。", "feature");
+            RefreshGameRules();
+        }
+        catch (Exception ex)
+        {
+            _notifications.Add("無法加入遊戲 Profile", ex.Message, "warn");
+        }
+    }
+
+    void ToggleSelectedGameProfile_Click(object s, RoutedEventArgs e)
+    {
+        if (GameProfileList.SelectedItem is not GameProfile profile) return;
+        _gameProfiles.SetEnabled(profile.ProcessName, !profile.Enabled);
+        Record("遊戲", $"Game Profile {profile.ProcessName} → {(!profile.Enabled ? "啟用" : "停用")}");
+        RefreshGameRules();
+    }
+
+    void EnableSelectedMemoryRule_Click(object s, RoutedEventArgs e)
+    {
+        if (MemoryRuleList.SelectedItem is not PerAppMemoryRule rule) return;
+        _memoryRules.SetEnabled(rule.Id, true);
+        Record("遊戲", $"啟用 Per-App Memory Rule：{rule.ProcessName}");
+        RefreshGameRules();
+    }
+
+    void DisableSelectedMemoryRule_Click(object s, RoutedEventArgs e)
+    {
+        if (MemoryRuleList.SelectedItem is not PerAppMemoryRule rule) return;
+        _memoryRules.SetEnabled(rule.Id, false);
+        Record("遊戲", $"停用 Per-App Memory Rule：{rule.ProcessName}");
+        RefreshGameRules();
+    }
+
+    void RemoveSelectedMemoryRule_Click(object s, RoutedEventArgs e)
+    {
+        if (MemoryRuleList.SelectedItem is not PerAppMemoryRule rule) return;
+        _memoryRules.Remove(rule.Id);
+        Record("遊戲", $"刪除 Per-App Memory Rule：{rule.ProcessName}");
+        RefreshGameRules();
     }
 
     void OpenProcesses_Click(object s, RoutedEventArgs e)
@@ -193,6 +320,7 @@ public partial class MainWindow : Window
         "啟動" => $"程式狀態：{m}",
         "救援" => $"救援工具：{m}",
         "事故" => $"事故分析：{m}",
+        "遊戲" => $"遊戲 / 規則：{m}",
         _ => m
     };
 
