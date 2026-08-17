@@ -16,6 +16,8 @@ public partial class MainWindow : Window
     readonly LogService _logs = new();
     readonly NotificationService _notifications = new();
     readonly UpdateService _updates = new();
+    readonly SettingsBackupService _settingsBackup = new();
+    readonly OemControlService _oem = new();
     readonly ProcessService _processes = new();
     readonly FlightRecorderService _flight = new();
     readonly PageFileHealthService _pageFile = new();
@@ -37,6 +39,8 @@ public partial class MainWindow : Window
     EventLogReadResult? _incidentRead;
     CrashAnalysis? _lastCrashAnalysis;
     GameReserveSnapshot? _gameSnapshot;
+    UpdateCheckResult? _lastUpdateResult;
+    OemControlStatus? _oemStatus;
 
     public MainWindow()
     {
@@ -51,8 +55,9 @@ public partial class MainWindow : Window
         _updateTimer.Start();
 
         RefreshPageFileHealth();
+        RefreshOemStatus();
         Record("啟動", "Memory Manager 已啟動，主視窗預設最大化。");
-        _notifications.Add("beta.29 開發版", "已加入事故分析，以及預設關閉、可還原的 Game Memory Reserve V2 / Per-App Memory Rules。", "feature");
+        _notifications.Add("beta.29 開發版", "已整合 Game Memory Reserve、Update Center、設定備份與安全 MSI OEM 入口。", "feature");
         Loaded += async (_, _) =>
         {
             RefreshProcesses();
@@ -77,13 +82,14 @@ public partial class MainWindow : Window
 
     void ShowPage(string? tag)
     {
-        foreach (var g in new[] { DashboardPage, ProcessesPage, GameRulesPage, NotificationsPage, LogsPage, IncidentsPage, SettingsPage, AboutPage })
+        foreach (var g in new[] { DashboardPage, ProcessesPage, GameRulesPage, UpdateOemPage, NotificationsPage, LogsPage, IncidentsPage, SettingsPage, AboutPage })
             g.Visibility = Visibility.Collapsed;
 
         (tag switch
         {
             "processes" => ProcessesPage,
             "game" => GameRulesPage,
+            "update-oem" => UpdateOemPage,
             "notifications" => NotificationsPage,
             "logs" => LogsPage,
             "incidents" => IncidentsPage,
@@ -95,6 +101,7 @@ public partial class MainWindow : Window
         if (tag == "logs") RefreshLogs();
         if (tag == "processes") RefreshProcesses();
         if (tag == "game") RefreshGameRules();
+        if (tag == "update-oem") RefreshOemStatus();
         if (tag == "incidents") RefreshIncidents();
     }
 
@@ -226,7 +233,7 @@ public partial class MainWindow : Window
     void GameMemoryMasterCheck_Click(object s, RoutedEventArgs e)
     {
         RefreshGameRules();
-        Record("遊戲", GameMemoryMasterCheck.IsChecked == true ? "使用者啟用背景 Memory Rule 總開關。" : "使用者停用背景 Memory Rule；要求立即還原。" );
+        Record("遊戲", GameMemoryMasterCheck.IsChecked == true ? "使用者啟用背景 Memory Rule 總開關。" : "使用者停用背景 Memory Rule；要求立即還原。");
     }
 
     void GameAutoDetectCheck_Click(object s, RoutedEventArgs e)
@@ -245,10 +252,7 @@ public partial class MainWindow : Window
             _notifications.Add("遊戲 Profile 已加入", $"{profile.ProcessName} 執行時會列入保護，不會被背景 Memory Rule 降低 Priority。", "feature");
             RefreshGameRules();
         }
-        catch (Exception ex)
-        {
-            _notifications.Add("無法加入遊戲 Profile", ex.Message, "warn");
-        }
+        catch (Exception ex) { _notifications.Add("無法加入遊戲 Profile", ex.Message, "warn"); }
     }
 
     void ToggleSelectedGameProfile_Click(object s, RoutedEventArgs e)
@@ -283,6 +287,94 @@ public partial class MainWindow : Window
         RefreshGameRules();
     }
 
+    void RefreshOemStatus()
+    {
+        _oemStatus = _oem.Detect();
+        OemDeviceText.Text = $"裝置：{_oemStatus.Manufacturer} · {_oemStatus.ProductName}";
+        OemStatusText.Text = _oemStatus.Summary;
+    }
+
+    void LaunchOemCenter_Click(object s, RoutedEventArgs e)
+    {
+        if (_oem.Launch(out var message)) Record("OEM", message);
+        else _notifications.Add("OEM Control Center", message, "warn");
+        RefreshOemStatus();
+    }
+
+    async void CheckUpdateCenter_Click(object s, RoutedEventArgs e) => await RefreshUpdateCenter();
+    async void UpdateChannelCombo_SelectionChanged(object s, SelectionChangedEventArgs e) { if (IsLoaded) await RefreshUpdateCenter(); }
+
+    async Task RefreshUpdateCenter()
+    {
+        var beta = (UpdateChannelCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() != "Stable";
+        UpdateLatestText.Text = "正在讀取 GitHub Releases…";
+        _lastUpdateResult = await _updates.CheckAsync(beta);
+        if (!string.IsNullOrWhiteSpace(_lastUpdateResult.Error))
+        {
+            UpdateLatestText.Text = "更新資料讀取失敗";
+            UpdatePublishedText.Text = _lastUpdateResult.Error;
+            UpdateReleaseNotesText.Text = string.Empty;
+            UpdateAssetsList.ItemsSource = null;
+            return;
+        }
+
+        var latest = _lastUpdateResult.Latest;
+        if (latest is null)
+        {
+            UpdateLatestText.Text = "此頻道目前沒有 Release";
+            UpdatePublishedText.Text = string.Empty;
+            return;
+        }
+
+        UpdateCurrentText.Text = "目前版本：" + UpdateService.CurrentTag;
+        UpdateLatestText.Text = (_lastUpdateResult.HasUpdate ? "有新版：" : "目前沒有比此開發版更新的版本：") + latest.Tag;
+        UpdatePublishedText.Text = $"{(latest.Prerelease ? "Beta" : "Stable")} · 發布：{latest.PublishedAt:yyyy-MM-dd HH:mm:ss} · Assets {latest.Assets.Count}";
+        UpdateReleaseNotesText.Text = latest.Notes;
+        UpdateAssetsList.ItemsSource = latest.Assets;
+        Record("更新", $"Update Center：channel={(beta ? "beta" : "stable")} latest={latest.Tag} update={_lastUpdateResult.HasUpdate}");
+    }
+
+    void OpenLatestRelease_Click(object s, RoutedEventArgs e) => OpenWeb(_lastUpdateResult?.Latest?.Url ?? "https://github.com/Ray20123315/Memory_manager/releases");
+
+    void OpenSelectedAsset_Click(object s, RoutedEventArgs e)
+    {
+        if (UpdateAssetsList.SelectedItem is ReleaseAssetInfo asset) OpenWeb(asset.Url);
+        else _notifications.Add("尚未選擇 Asset", "先在 Assets 清單選擇 EXE 或 SHA256SUMS.txt。", "info");
+    }
+
+    void BackupSettings_Click(object s, RoutedEventArgs e)
+    {
+        try
+        {
+            var path = _settingsBackup.CreateBackup();
+            BackupStatusText.Text = "備份完成：" + path;
+            Record("設定", "建立設定備份：" + path);
+        }
+        catch (Exception ex) { BackupStatusText.Text = "備份失敗：" + ex.Message; }
+    }
+
+    void RestoreSettings_Click(object s, RoutedEventArgs e)
+    {
+        var ok = _settingsBackup.RestoreLatest(out var message);
+        BackupStatusText.Text = message;
+        Record("設定", (ok ? "設定還原完成：" : "設定還原失敗：") + message);
+    }
+
+    void OpenBackupFolder_Click(object s, RoutedEventArgs e)
+    {
+        try { Process.Start(new ProcessStartInfo(_settingsBackup.BackupDirectory) { UseShellExecute = true }); }
+        catch (Exception ex) { BackupStatusText.Text = "無法開啟備份資料夾：" + ex.Message; }
+    }
+
+    void OpenGitHub_Click(object s, RoutedEventArgs e) => OpenWeb("https://github.com/Ray20123315/Memory_manager");
+    void OpenWebsite_Click(object s, RoutedEventArgs e) => OpenWeb("https://ray20123315.github.io/html/");
+    void OpenReleases_Click(object s, RoutedEventArgs e) => OpenWeb("https://github.com/Ray20123315/Memory_manager/releases");
+
+    static void OpenWeb(string url)
+    {
+        if (!string.IsNullOrWhiteSpace(url)) Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+    }
+
     void OpenProcesses_Click(object s, RoutedEventArgs e)
     {
         ShowPage("processes");
@@ -308,9 +400,7 @@ public partial class MainWindow : Window
 
     void RefreshLogs()
     {
-        LogList.ItemsSource = _logs.ReadRecent()
-            .Select(x => $"{x.Time:HH:mm:ss}  [{x.Category}]  {Plain(x.Category, x.Message)}")
-            .ToList();
+        LogList.ItemsSource = _logs.ReadRecent().Select(x => $"{x.Time:HH:mm:ss}  [{x.Category}]  {Plain(x.Category, x.Message)}").ToList();
     }
 
     string Plain(string c, string m) => c switch
@@ -321,6 +411,7 @@ public partial class MainWindow : Window
         "救援" => $"救援工具：{m}",
         "事故" => $"事故分析：{m}",
         "遊戲" => $"遊戲 / 規則：{m}",
+        "OEM" => $"OEM：{m}",
         _ => m
     };
 
@@ -379,7 +470,6 @@ public partial class MainWindow : Window
 
         foreach (var e in events.Where(e => e.Time >= from && e.Time <= to).Take(60))
             rows.Add((e.Time, $"Event {e.EventId} · {PreviousCrashAnalyzer.FriendlyCategory(e.Category)} · {e.Summary}"));
-
         return rows.OrderBy(x => x.Time).Select(x => $"{x.Time:yyyy-MM-dd HH:mm:ss}  {x.Text}").ToList();
     }
 
@@ -388,23 +478,22 @@ public partial class MainWindow : Window
 
     async Task CheckUpdates(bool quiet)
     {
-        try
+        var result = await _updates.CheckAsync(includePrereleases: true);
+        if (!string.IsNullOrWhiteSpace(result.Error))
         {
-            var r = await _updates.CheckAsync();
-            if (r.HasUpdate)
-            {
-                _notifications.Add("有新版可用", $"{r.Tag} 已發布。可到 Releases 查看新功能與改進。", "update", true);
-                Record("更新", $"發現新版 {r.Tag}");
-            }
-            else if (!quiet)
-            {
-                _notifications.Add("已是目前版本", string.IsNullOrWhiteSpace(r.Tag) ? "沒有讀到新版 Release。" : $"目前 Release：{r.Tag}");
-            }
+            Record("錯誤", "更新檢查失敗：" + result.Error);
+            if (!quiet) _notifications.Add("更新檢查失敗", "目前無法讀取 GitHub Releases；不影響本機功能。", "warn");
+            return;
         }
-        catch (Exception ex)
+
+        if (result.HasUpdate && result.Latest is not null)
         {
-            Record("錯誤", "更新檢查失敗：" + ex.Message);
-            if (!quiet) _notifications.Add("更新檢查失敗", "目前無法連線 GitHub；不影響本機功能。", "warn");
+            _notifications.Add("有新版可用", $"{result.Latest.Tag} 已發布。可到 Update Center 查看 Assets 與 SHA-256。", "update", true);
+            Record("更新", $"發現新版 {result.Latest.Tag}");
+        }
+        else if (!quiet)
+        {
+            _notifications.Add("更新檢查完成", result.Latest is null ? "目前沒有 Release。" : $"目前頻道最新：{result.Latest.Tag}");
         }
     }
 
@@ -452,23 +541,11 @@ public partial class MainWindow : Window
         var r = System.Windows.Application.Current.Resources;
         if (light)
         {
-            r["Bg"] = Brush(0xF6, 0xF8, 0xFC);
-            r["Side"] = Brush(0xFF, 0xFF, 0xFF);
-            r["Panel"] = Brush(0xFF, 0xFF, 0xFF);
-            r["Panel2"] = Brush(0xF0, 0xF3, 0xF8);
-            r["Text"] = Brush(0x14, 0x1A, 0x26);
-            r["Muted"] = Brush(0x62, 0x70, 0x84);
-            r["Outline"] = Brush(0xDA, 0xE1, 0xEC);
+            r["Bg"] = Brush(0xF6, 0xF8, 0xFC); r["Side"] = Brush(0xFF, 0xFF, 0xFF); r["Panel"] = Brush(0xFF, 0xFF, 0xFF); r["Panel2"] = Brush(0xF0, 0xF3, 0xF8); r["Text"] = Brush(0x14, 0x1A, 0x26); r["Muted"] = Brush(0x62, 0x70, 0x84); r["Outline"] = Brush(0xDA, 0xE1, 0xEC);
         }
         else
         {
-            r["Bg"] = Brush(0x08, 0x0B, 0x12);
-            r["Side"] = Brush(0x0C, 0x11, 0x1B);
-            r["Panel"] = Brush(0x10, 0x16, 0x22);
-            r["Panel2"] = Brush(0x15, 0x1D, 0x2B);
-            r["Text"] = Brush(0xEE, 0xF4, 0xFF);
-            r["Muted"] = Brush(0x8F, 0x9B, 0xB0);
-            r["Outline"] = Brush(0x26, 0x32, 0x47);
+            r["Bg"] = Brush(0x08, 0x0B, 0x12); r["Side"] = Brush(0x0C, 0x11, 0x1B); r["Panel"] = Brush(0x10, 0x16, 0x22); r["Panel2"] = Brush(0x15, 0x1D, 0x2B); r["Text"] = Brush(0xEE, 0xF4, 0xFF); r["Muted"] = Brush(0x8F, 0x9B, 0xB0); r["Outline"] = Brush(0x26, 0x32, 0x47);
         }
     }
 
