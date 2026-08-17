@@ -21,6 +21,7 @@ public partial class App : System.Windows.Application
 
         var window = new MainWindow();
         MainWindow = window;
+        window.ContentRendered += (_, _) => UiVersionService.ApplyReleaseLabels(window);
         window.Show();
     }
 }
