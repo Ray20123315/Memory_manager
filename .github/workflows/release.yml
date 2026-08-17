@@ -89,6 +89,19 @@ jobs:
           $files='artifacts/MemoryManager.exe','artifacts/MemoryManagerSetup.exe'
           $lines = foreach($f in $files){$h=(Get-FileHash $f -Algorithm SHA256).Hash.ToLower(); "$h  $([IO.Path]::GetFileName($f))"}
           $lines | Set-Content artifacts/SHA256SUMS.txt
+      - name: Verify SHA256 manifest
+        shell: pwsh
+        run: |
+          $manifest = Get-Content artifacts/SHA256SUMS.txt
+          foreach($f in 'artifacts/MemoryManager.exe','artifacts/MemoryManagerSetup.exe'){
+            $name=[IO.Path]::GetFileName($f)
+            $actual=(Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
+            $line=$manifest | Where-Object { $_ -match ('\s+' + [regex]::Escape($name) + '$') } | Select-Object -First 1
+            if(!$line){throw "SHA256SUMS missing $name"}
+            $recorded=($line -split '\s+')[0].ToLower()
+            if($recorded -ne $actual){throw "SHA256SUMS mismatch for $name"}
+            "verified $name sha256=$actual"
+          }
       - name: Smoke-check files
         shell: pwsh
         run: |
