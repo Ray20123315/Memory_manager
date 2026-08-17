@@ -1,8 +1,9 @@
-using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Media;
 using System.Windows.Threading;
+using MediaBrushes = System.Windows.Media.Brushes;
+using WpfButton = System.Windows.Controls.Button;
+using WpfMessageBox = System.Windows.MessageBox;
 using Ray.MemoryManager.Services;
 
 namespace Ray.MemoryManager;
@@ -35,7 +36,7 @@ public partial class MainWindow : Window
     void Nav_Click(object sender,RoutedEventArgs e)
     {
         foreach(var g in new[]{DashboardPage,ProcessesPage,NotificationsPage,LogsPage,SettingsPage,AboutPage}) g.Visibility=Visibility.Collapsed;
-        var tag=(sender as Button)?.Tag?.ToString();
+        var tag=(sender as WpfButton)?.Tag?.ToString();
         (tag switch {"processes"=>ProcessesPage,"notifications"=>NotificationsPage,"logs"=>LogsPage,"settings"=>SettingsPage,"about"=>AboutPage,_=>DashboardPage}).Visibility=Visibility.Visible;
         if(tag=="logs") RefreshLogs(); if(tag=="processes") RefreshProcesses();
     }
@@ -45,9 +46,9 @@ public partial class MainWindow : Window
         var s=_telemetry.Latest; if(s.TotalPhysical==0) return;
         AvailableText.Text=Bytes(s.AvailablePhysical); UsedText.Text=$"{s.PhysicalUsedPercent:0.0}%"; CommitText.Text=$"{s.CommitUsedPercent:0.0}%"; CommitBar.Value=s.CommitUsedPercent;
         CommitDetailText.Text=$"已用 {Bytes(s.CommitTotal)} / 上限 {Bytes(s.CommitLimit)}，還有 {Bytes(s.CommitHeadroom)} 緩衝"; EtaText.Text=_flight.CommitEtaText();
-        if(s.CommitUsedPercent>=95 || s.AvailablePhysical<768UL*1024*1024){HealthText.Text="危險：記憶體快用完";HealthText.Foreground=Brushes.OrangeRed;SideStatus.Text="Emergency";}
-        else if(s.CommitUsedPercent>=85 || s.AvailablePhysical<2UL*1024*1024*1024){HealthText.Text="注意：壓力偏高";HealthText.Foreground=Brushes.Orange;SideStatus.Text="Pressure high";}
-        else {HealthText.Text="正常，不需要亂清 RAM";HealthText.Foreground=Brushes.LightGreen;SideStatus.Text="Normal";}
+        if(s.CommitUsedPercent>=95 || s.AvailablePhysical<768UL*1024*1024){HealthText.Text="危險：記憶體快用完";HealthText.Foreground=MediaBrushes.OrangeRed;SideStatus.Text="Emergency";}
+        else if(s.CommitUsedPercent>=85 || s.AvailablePhysical<2UL*1024*1024*1024){HealthText.Text="注意：壓力偏高";HealthText.Foreground=MediaBrushes.Orange;SideStatus.Text="Pressure high";}
+        else {HealthText.Text="正常，不需要亂清 RAM";HealthText.Foreground=MediaBrushes.LightGreen;SideStatus.Text="Normal";}
         if(DateTimeOffset.Now-_lastProcessRefresh>TimeSpan.FromSeconds(3)){RefreshProcesses();_lastProcessRefresh=DateTimeOffset.Now;}
     }
 
@@ -56,7 +57,7 @@ public partial class MainWindow : Window
     void RefreshLogs_Click(object s,RoutedEventArgs e)=>RefreshLogs();
     void RefreshLogs(){LogList.ItemsSource=_logs.ReadRecent().Select(x=>$"{x.Time:HH:mm:ss}  [{x.Category}]  {Plain(x.Category,x.Message)}").ToList();}
     string Plain(string c,string m)=>c switch{"更新"=>$"更新檢查：{m}","錯誤"=>$"需要注意：{m}","啟動"=>$"程式狀態：{m}",_=>m};
-    void OpenLogs_Click(object s,RoutedEventArgs e){try{_logs.OpenDirectory();_logs.Write("Log","已開啟實際 Log 資料夾。");}catch(Exception ex){MessageBox.Show("無法開啟 Log 資料夾："+ex.Message);}}
+    void OpenLogs_Click(object s,RoutedEventArgs e){try{_logs.OpenDirectory();_logs.Write("Log","已開啟實際 Log 資料夾。");}catch(Exception ex){WpfMessageBox.Show("無法開啟 Log 資料夾："+ex.Message);}}
     async void CheckUpdate_Click(object s,RoutedEventArgs e)=>await CheckUpdates(false);
     async Task CheckUpdatesQuietly(){if(UpdateNotifyCheck.IsChecked==true) await CheckUpdates(true);}
     async Task CheckUpdates(bool quiet)
