@@ -2,12 +2,14 @@ name: Build and publish beta.28
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - '.Ray_Chen/**'
   workflow_dispatch:
 permissions:
   contents: write
 concurrency:
   group: beta28-release
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   build-release:
     runs-on: windows-latest
@@ -23,12 +25,16 @@ jobs:
         shell: pwsh
         run: |
           dotnet publish src/MemoryManager/MemoryManager.csproj -c Release -r win-x64 --self-contained true -o artifacts/app
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path artifacts/app/MemoryManager.exe)) { throw 'MemoryManager.exe was not produced' }
           New-Item -ItemType Directory -Force installer/MemoryManagerSetup/Payload | Out-Null
           Copy-Item artifacts/app/MemoryManager.exe installer/MemoryManagerSetup/Payload/MemoryManager.exe -Force
       - name: Build real installer
         shell: pwsh
         run: |
           dotnet publish installer/MemoryManagerSetup/MemoryManagerSetup.csproj -c Release -r win-x64 --self-contained true -o artifacts/setup
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path artifacts/setup/MemoryManagerSetup.exe)) { throw 'MemoryManagerSetup.exe was not produced' }
           Copy-Item artifacts/setup/MemoryManagerSetup.exe artifacts/MemoryManagerSetup.exe -Force
           Copy-Item artifacts/app/MemoryManager.exe artifacts/MemoryManager.exe -Force
       - name: Optional Authenticode signing
@@ -39,9 +45,13 @@ jobs:
           [IO.File]::WriteAllBytes($pfx,[Convert]::FromBase64String($env:PFX_BASE64))
           $signtool=(Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe | Where-Object FullName -Match '\\x64\\' | Sort-Object FullName -Descending | Select-Object -First 1).FullName
           & $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:PFX_PASSWORD artifacts/MemoryManager.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:PFX_PASSWORD artifacts/MemoryManagerSetup.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $signtool verify /pa /all artifacts/MemoryManager.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $signtool verify /pa /all artifacts/MemoryManagerSetup.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Hash artifacts
         shell: pwsh
         run: |
