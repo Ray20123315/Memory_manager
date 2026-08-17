@@ -34,11 +34,12 @@ public sealed class UpdateService
     {
         try
         {
-            using var r = await _http.GetAsync("https://api.github.com/repos/Ray20123315/Memory_manager/releases?per_page=20");
+            using var r = await _http.GetAsync("https://api.github.com/repos/Ray20123315/Memory_manager/releases?per_page=20").ConfigureAwait(false);
             if (!r.IsSuccessStatusCode)
                 return new(false, CurrentTag, null, [], $"GitHub Releases HTTP {(int)r.StatusCode}");
 
-            using var doc = JsonDocument.Parse(await r.Content.ReadAsStringAsync());
+            var json = await r.Content.ReadAsStringAsync().ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(json);
             var releases = new List<ReleaseInfo>();
             foreach (var root in doc.RootElement.EnumerateArray())
             {
