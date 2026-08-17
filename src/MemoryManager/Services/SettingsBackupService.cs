@@ -18,8 +18,9 @@ public sealed class SettingsBackupService
 
     public string CreateBackup()
     {
-        var path = Path.Combine(_backupDir, $"settings-{DateTime.Now:yyyyMMdd-HHmmss}.zip");
-        if (File.Exists(path)) File.Delete(path);
+        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff");
+        var unique = Guid.NewGuid().ToString("N")[..8];
+        var path = Path.Combine(_backupDir, $"settings-{stamp}-{unique}.zip");
         ZipFile.CreateFromDirectory(_settingsDir, path, CompressionLevel.Fastest, includeBaseDirectory: false);
         return path;
     }
