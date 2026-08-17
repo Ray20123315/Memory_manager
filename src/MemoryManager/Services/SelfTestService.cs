@@ -60,11 +60,77 @@ public static class SelfTestService
             checks.Add(new { name = "update-version-ordering", ok = versionCompareOk, current = UpdateService.CurrentTag });
             ok &= versionCompareOk;
 
+            const string releaseFixture = """
+            [
+              {
+                "tag_name":"v0.9.0-beta.30",
+                "name":"Memory Manager beta.30",
+                "body":"Synthetic beta notes",
+                "html_url":"https://example.invalid/beta30",
+                "draft":false,
+                "prerelease":true,
+                "published_at":"2026-08-18T00:00:00Z",
+                "assets":[
+                  {
+                    "name":"MemoryManager.exe",
+                    "size":123456789,
+                    "digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "browser_download_url":"https://example.invalid/MemoryManager.exe",
+                    "download_count":42
+                  }
+                ]
+              },
+              {
+                "tag_name":"v0.9.0",
+                "name":"Memory Manager stable",
+                "body":"Synthetic stable notes",
+                "html_url":"https://example.invalid/stable",
+                "draft":false,
+                "prerelease":false,
+                "published_at":"2026-08-17T00:00:00Z",
+                "assets":[
+                  {
+                    "name":"MemoryManagerSetup.exe",
+                    "size":234567890,
+                    "digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "browser_download_url":"https://example.invalid/MemoryManagerSetup.exe",
+                    "download_count":7
+                  }
+                ]
+              },
+              {
+                "tag_name":"v0.8.9",
+                "name":"Draft must be ignored",
+                "body":"draft",
+                "html_url":"https://example.invalid/draft",
+                "draft":true,
+                "prerelease":false,
+                "published_at":"2026-08-16T00:00:00Z",
+                "assets":[]
+              }
+            ]
+            """;
+            var betaFixture = UpdateService.ParseReleaseListJson(releaseFixture, includePrereleases: true);
+            var stableFixture = UpdateService.ParseReleaseListJson(releaseFixture, includePrereleases: false);
+            var betaAsset = betaFixture.FirstOrDefault()?.Assets.FirstOrDefault();
+            var releaseParsingOk = betaFixture.Count == 2
+                && betaFixture[0].Tag == "v0.9.0-beta.30"
+                && betaFixture[0].Prerelease
+                && betaAsset is not null
+                && betaAsset.Name == "MemoryManager.exe"
+                && betaAsset.Size == 123456789
+                && betaAsset.DownloadCount == 42
+                && betaAsset.Digest == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                && stableFixture.Count == 1
+                && stableFixture[0].Tag == "v0.9.0"
+                && !stableFixture[0].Prerelease;
+            checks.Add(new { name = "update-release-json-fixture", ok = releaseParsingOk, betaCount = betaFixture.Count, stableCount = stableFixture.Count, betaTag = betaFixture.FirstOrDefault()?.Tag ?? string.Empty, digest = betaAsset?.Digest ?? string.Empty });
+            ok &= releaseParsingOk;
+
             var liveUpdate = new UpdateService().CheckAsync(includePrereleases: true).GetAwaiter().GetResult();
             var digestAssets = liveUpdate.Releases.SelectMany(x => x.Assets).Where(x => x.Digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)).ToList();
-            var liveUpdateOk = string.IsNullOrWhiteSpace(liveUpdate.Error) && liveUpdate.Releases.Count > 0 && digestAssets.Count > 0;
-            checks.Add(new { name = "update-metadata-live", ok = liveUpdateOk, error = liveUpdate.Error, latest = liveUpdate.Latest?.Tag ?? string.Empty, releases = liveUpdate.Releases.Count, digestAssets = digestAssets.Count, sampleDigest = digestAssets.FirstOrDefault()?.Digest ?? string.Empty });
-            ok &= liveUpdateOk;
+            var liveAvailable = string.IsNullOrWhiteSpace(liveUpdate.Error) && liveUpdate.Releases.Count > 0;
+            checks.Add(new { name = "update-metadata-live-observation", available = liveAvailable, error = liveUpdate.Error, latest = liveUpdate.Latest?.Tag ?? string.Empty, releases = liveUpdate.Releases.Count, digestAssets = digestAssets.Count, sampleDigest = digestAssets.FirstOrDefault()?.Digest ?? string.Empty });
 
             var oem = new OemControlService().Detect();
             var oemOk = !string.IsNullOrWhiteSpace(oem.Summary) && !string.IsNullOrWhiteSpace(oem.LaunchTarget);
