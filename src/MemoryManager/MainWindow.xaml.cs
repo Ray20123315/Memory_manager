@@ -252,7 +252,7 @@ public partial class MainWindow : Window
 
     static void ApplyTheme(bool light)
     {
-        var r = Application.Current.Resources;
+        var r = System.Windows.Application.Current.Resources;
         if (light)
         {
             r["Bg"] = Brush(0xF6, 0xF8, 0xFC);
@@ -275,7 +275,7 @@ public partial class MainWindow : Window
         }
     }
 
-    static SolidColorBrush Brush(byte r, byte g, byte b) => new(Color.FromRgb(r, g, b));
+    static SolidColorBrush Brush(byte r, byte g, byte b) => new(System.Windows.Media.Color.FromRgb(r, g, b));
     static int ParseMs(string? t, int d) => int.TryParse(new string((t ?? "").TakeWhile(char.IsDigit).ToArray()), out var v) ? v : d;
     static string Bytes(ulong b) => b >= 1024UL * 1024 * 1024 ? $"{b / 1024d / 1024 / 1024:0.0} GB" : $"{b / 1024d / 1024:0} MB";
 }
