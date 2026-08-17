@@ -19,7 +19,7 @@ public sealed record UpdateCheckResult(bool HasUpdate, string CurrentTag, Releas
 
 public sealed class UpdateService
 {
-    public const string CurrentTag = "v0.9.0-beta.29-dev";
+    public const string CurrentTag = "v0.9.0-beta.29";
     readonly HttpClient _http = new();
 
     public UpdateService()
