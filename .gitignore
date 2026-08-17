@@ -1,0 +1,10 @@
+**/bin/
+**/obj/
+artifacts/
+installer/MemoryManagerSetup/Payload/MemoryManager.exe
+.Ray_Chen/memory_archives/
+*.pfx
+*.snk
+*.cer
+*.key
+*.log
