@@ -1,0 +1,67 @@
+name: Build and publish beta.28
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: beta28-release
+  cancel-in-progress: false
+jobs:
+  build-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build app
+        shell: pwsh
+        run: |
+          dotnet publish src/MemoryManager/MemoryManager.csproj -c Release -r win-x64 --self-contained true -o artifacts/app
+          New-Item -ItemType Directory -Force installer/MemoryManagerSetup/Payload | Out-Null
+          Copy-Item artifacts/app/MemoryManager.exe installer/MemoryManagerSetup/Payload/MemoryManager.exe -Force
+      - name: Build real installer
+        shell: pwsh
+        run: |
+          dotnet publish installer/MemoryManagerSetup/MemoryManagerSetup.csproj -c Release -r win-x64 --self-contained true -o artifacts/setup
+          Copy-Item artifacts/setup/MemoryManagerSetup.exe artifacts/MemoryManagerSetup.exe -Force
+          Copy-Item artifacts/app/MemoryManager.exe artifacts/MemoryManager.exe -Force
+      - name: Optional Authenticode signing
+        if: ${{ secrets.WINDOWS_CERTIFICATE_PFX != '' }}
+        shell: pwsh
+        env:
+          PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          [IO.File]::WriteAllBytes($pfx,[Convert]::FromBase64String($env:PFX_BASE64))
+          $signtool=(Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe | Where-Object FullName -Match '\\x64\\' | Sort-Object FullName -Descending | Select-Object -First 1).FullName
+          & $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:PFX_PASSWORD artifacts/MemoryManager.exe
+          & $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:PFX_PASSWORD artifacts/MemoryManagerSetup.exe
+          & $signtool verify /pa /all artifacts/MemoryManager.exe
+          & $signtool verify /pa /all artifacts/MemoryManagerSetup.exe
+      - name: Hash artifacts
+        shell: pwsh
+        run: |
+          $files='artifacts/MemoryManager.exe','artifacts/MemoryManagerSetup.exe'
+          $lines = foreach($f in $files){$h=(Get-FileHash $f -Algorithm SHA256).Hash.ToLower(); "$h  $([IO.Path]::GetFileName($f))"}
+          $lines | Set-Content artifacts/SHA256SUMS.txt
+      - name: Smoke-check files
+        shell: pwsh
+        run: |
+          if(!(Test-Path artifacts/MemoryManager.exe)){throw 'MemoryManager.exe missing'}
+          if(!(Test-Path artifacts/MemoryManagerSetup.exe)){throw 'MemoryManagerSetup.exe missing'}
+          Get-Item artifacts/MemoryManager.exe, artifacts/MemoryManagerSetup.exe | Format-Table Name,Length
+      - name: Publish GitHub Release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag='v0.9.0-beta.28'
+          if(gh release view $tag 2>$null){
+            gh release upload $tag artifacts/MemoryManager.exe artifacts/MemoryManagerSetup.exe artifacts/SHA256SUMS.txt --clobber
+          } else {
+            gh release create $tag artifacts/MemoryManager.exe artifacts/MemoryManagerSetup.exe artifacts/SHA256SUMS.txt --title 'Memory Manager v0.9.0-beta.28' --notes-file CHANGELOG.md --prerelease --target main
+          }
