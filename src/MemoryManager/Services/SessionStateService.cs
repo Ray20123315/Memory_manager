@@ -14,7 +14,7 @@ public sealed class SessionStateService : IDisposable
 {
     readonly object _gate = new();
     readonly string _path;
-    readonly Timer? _timer;
+    readonly System.Threading.Timer? _timer;
     SessionState _current;
 
     public SessionState? PreviousSession { get; }
@@ -31,7 +31,7 @@ public sealed class SessionStateService : IDisposable
         _current = new(Guid.NewGuid().ToString("N"), now, now, false, null);
         WriteCurrent();
         if (startHeartbeat)
-            _timer = new Timer(_ => TouchHeartbeat(), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            _timer = new System.Threading.Timer(_ => TouchHeartbeat(), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
     }
 
     public void TouchHeartbeat()
@@ -55,10 +55,7 @@ public sealed class SessionStateService : IDisposable
         }
     }
 
-    public void Dispose()
-    {
-        _timer?.Dispose();
-    }
+    public void Dispose() => _timer?.Dispose();
 
     void WriteCurrent()
     {
