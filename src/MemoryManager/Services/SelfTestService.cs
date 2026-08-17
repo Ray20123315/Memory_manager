@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using Ray.MemoryManager.Models;
@@ -43,6 +44,16 @@ public static class SelfTestService
             checks.Add(new { name = "incident-classifier", ok = classifierOk, code = analysis.Code, analysis.Confidence });
             ok &= classifierOk;
 
+            var safety = new GameMemorySafetyPolicy(new ProcessService());
+            var noGames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var foregroundProtected = safety.Classify(11001, "SyntheticForeground", 11001, noGames).Protected;
+            var antiCheatProtected = safety.Classify(11002, "EasyAntiCheat_EOS", 0, noGames).Protected;
+            var voiceProtected = safety.Classify(11003, "Discord", 0, noGames).Protected;
+            var normalAllowed = !safety.Classify(11004, "SyntheticBackgroundHelper", 0, noGames).Protected;
+            var safetyOk = foregroundProtected && antiCheatProtected && voiceProtected && normalAllowed;
+            checks.Add(new { name = "game-safety-invariants", ok = safetyOk, foregroundProtected, antiCheatProtected, voiceProtected, normalAllowed });
+            ok &= safetyOk;
+
             var tempRoot = Path.Combine(Path.GetTempPath(), "memory-manager-selftest-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempRoot);
             try
@@ -67,6 +78,48 @@ public static class SelfTestService
                 var flightOk = persisted.Any(x => x.Type == "frame") && persisted.Any(x => x.Type == "action");
                 checks.Add(new { name = "flight-recorder-persistence", ok = flightOk, count = persisted.Count });
                 ok &= flightOk;
+
+                var profilePath = Path.Combine(tempRoot, "game-profiles.json");
+                var profiles = new GameProfileService(profilePath);
+                var detected = profiles.EnsureAutoDetected(new ForegroundProcessInfo(12001, "SyntheticGame", @"C:\Games\Steam\steamapps\common\SyntheticGame\game.exe"));
+                var profilesReloaded = new GameProfileService(profilePath);
+                var profileOk = detected is not null && profilesReloaded.IsProfile("SyntheticGame");
+                checks.Add(new { name = "game-profile-persistence", ok = profileOk, count = profilesReloaded.Profiles.Count });
+                ok &= profileOk;
+
+                var rulePath = Path.Combine(tempRoot, "memory-rules.json");
+                var rules = new PerAppMemoryRuleService(rulePath);
+                var addedRule = rules.AddOrEnable("SyntheticBackground", 1, 64, 2);
+                var rulesReloaded = new PerAppMemoryRuleService(rulePath);
+                var ruleOk = rulesReloaded.Rules.Any(x => x.Id == addedRule.Id && x.Enabled && x.TargetMemoryPriority == 2);
+                checks.Add(new { name = "per-app-rule-persistence", ok = ruleOk, count = rulesReloaded.Rules.Count });
+                ok &= ruleOk;
+
+                Process? child = null;
+                try
+                {
+                    child = Process.Start(new ProcessStartInfo("cmd.exe", "/d /c ping 127.0.0.1 -n 20 > nul") { UseShellExecute = false, CreateNoWindow = true });
+                    if (child is null) throw new InvalidOperationException("Disposable child process did not start.");
+                    System.Threading.Thread.Sleep(250);
+                    var priority = new ProcessMemoryPriorityService();
+                    var beforeOk = priority.TryGet(child.Id, out var before, out var beforeError);
+                    var target = before == 2 ? 3u : 2u;
+                    var change = priority.ApplyTemporary(child.Id, target);
+                    var changedOk = priority.TryGet(child.Id, out var changed, out var changedError) && changed == target;
+                    var restoreCall = priority.Restore(child.Id, out var restoreMessage);
+                    var restoredOk = priority.TryGet(child.Id, out var restored, out var restoredError) && restored == before;
+                    var roundtripOk = beforeOk && change.Applied && changedOk && restoreCall && restoredOk;
+                    checks.Add(new { name = "memory-priority-roundtrip", ok = roundtripOk, before, target, changed, restored, beforeError, changedError, restoredError, change.Message, restoreMessage });
+                    ok &= roundtripOk;
+                }
+                finally
+                {
+                    if (child is not null)
+                    {
+                        try { if (!child.HasExited) child.Kill(true); } catch { }
+                        child.Dispose();
+                    }
+                }
             }
             finally
             {
