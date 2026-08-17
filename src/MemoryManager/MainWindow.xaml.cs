@@ -5,6 +5,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using MediaBrushes = System.Windows.Media.Brushes;
 using WpfButton = System.Windows.Controls.Button;
+using Ray.MemoryManager.Models;
 using Ray.MemoryManager.Services;
 
 namespace Ray.MemoryManager;
@@ -19,11 +20,16 @@ public partial class MainWindow : Window
     readonly FlightRecorderService _flight = new();
     readonly PageFileHealthService _pageFile = new();
     readonly AdaptiveRefreshService _adaptive = new();
+    readonly WindowsEventLogService _eventLogs = new();
+    readonly PreviousCrashAnalyzer _crashAnalyzer = new();
+    readonly SessionStateService _session = new();
     readonly DispatcherTimer _uiTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     readonly DispatcherTimer _updateTimer = new() { Interval = TimeSpan.FromMinutes(30) };
     DateTimeOffset _lastProcessRefresh = DateTimeOffset.MinValue;
     DateTimeOffset _lastPageFileRefresh = DateTimeOffset.MinValue;
     PageFileHealth? _pageFileHealth;
+    EventLogReadResult? _incidentRead;
+    CrashAnalysis? _lastCrashAnalysis;
 
     public MainWindow()
     {
@@ -37,23 +43,31 @@ public partial class MainWindow : Window
         _updateTimer.Start();
 
         RefreshPageFileHealth();
-        _logs.Write("啟動", "Memory Manager 已啟動，主視窗預設最大化。");
-        _notifications.Add("beta.29 開發版", "已加入真正 Process Commit、Adaptive Refresh、Page File 狀態與 Emergency Rescue。", "feature");
+        Record("啟動", "Memory Manager 已啟動，主視窗預設最大化。");
+        _notifications.Add("beta.29 開發版", "已加入事故時間線、Previous Crash Analyzer、Reliability History 與可跨當機保留的 Flight Recorder V2。", "feature");
         Loaded += async (_, _) =>
         {
             RefreshProcesses();
             RefreshLogs();
             RefreshDashboard();
+            RefreshIncidents();
             await CheckUpdatesQuietly();
         };
-        Closed += (_, _) => { _telemetry.Dispose(); _notifications.Dispose(); };
+        Closed += (_, _) =>
+        {
+            _flight.RecordAction("session", "graceful-exit");
+            _session.MarkGracefulExit();
+            _session.Dispose();
+            _telemetry.Dispose();
+            _notifications.Dispose();
+        };
     }
 
     void Nav_Click(object sender, RoutedEventArgs e) => ShowPage((sender as WpfButton)?.Tag?.ToString());
 
     void ShowPage(string? tag)
     {
-        foreach (var g in new[] { DashboardPage, ProcessesPage, NotificationsPage, LogsPage, SettingsPage, AboutPage })
+        foreach (var g in new[] { DashboardPage, ProcessesPage, NotificationsPage, LogsPage, IncidentsPage, SettingsPage, AboutPage })
             g.Visibility = Visibility.Collapsed;
 
         (tag switch
@@ -61,6 +75,7 @@ public partial class MainWindow : Window
             "processes" => ProcessesPage,
             "notifications" => NotificationsPage,
             "logs" => LogsPage,
+            "incidents" => IncidentsPage,
             "settings" => SettingsPage,
             "about" => AboutPage,
             _ => DashboardPage
@@ -68,6 +83,7 @@ public partial class MainWindow : Window
 
         if (tag == "logs") RefreshLogs();
         if (tag == "processes") RefreshProcesses();
+        if (tag == "incidents") RefreshIncidents();
     }
 
     void RefreshDashboard()
@@ -143,7 +159,7 @@ public partial class MainWindow : Window
     void OpenProcesses_Click(object s, RoutedEventArgs e)
     {
         ShowPage("processes");
-        _logs.Write("救援", "從 Emergency Rescue 開啟程式清單。");
+        Record("救援", "從 Emergency Rescue 開啟程式清單。");
     }
 
     void OpenTaskManager_Click(object s, RoutedEventArgs e)
@@ -151,11 +167,11 @@ public partial class MainWindow : Window
         try
         {
             Process.Start(new ProcessStartInfo("taskmgr.exe") { UseShellExecute = true });
-            _logs.Write("救援", "已開啟 Windows 工作管理員。");
+            Record("救援", "已開啟 Windows 工作管理員。");
         }
         catch (Exception ex)
         {
-            _logs.Write("錯誤", "無法開啟工作管理員：" + ex.Message);
+            Record("錯誤", "無法開啟工作管理員：" + ex.Message);
             _notifications.Add("無法開啟工作管理員", "請按 Ctrl + Shift + Esc 手動開啟。", "warn");
             ShowPage("notifications");
         }
@@ -176,6 +192,7 @@ public partial class MainWindow : Window
         "錯誤" => $"需要注意：{m}",
         "啟動" => $"程式狀態：{m}",
         "救援" => $"救援工具：{m}",
+        "事故" => $"事故分析：{m}",
         _ => m
     };
 
@@ -184,14 +201,58 @@ public partial class MainWindow : Window
         try
         {
             _logs.OpenDirectory();
-            _logs.Write("Log", "已開啟實際 Log 資料夾。");
+            Record("Log", "已開啟實際 Log 資料夾。");
         }
         catch (Exception ex)
         {
-            _logs.Write("錯誤", "無法開啟 Log 資料夾：" + ex.Message);
+            Record("錯誤", "無法開啟 Log 資料夾：" + ex.Message);
             _notifications.Add("Log 資料夾開啟失敗", "程式已保留錯誤內容；請到通知頁查看。", "warn");
             ShowPage("notifications");
         }
+    }
+
+    void RefreshIncidents_Click(object s, RoutedEventArgs e) => RefreshIncidents();
+
+    void RefreshIncidents()
+    {
+        _incidentRead = _eventLogs.ReadRecent(TimeSpan.FromDays(7), 400);
+        _lastCrashAnalysis = _crashAnalyzer.Analyze(_session.PreviousSession, _incidentRead.Events);
+        PreviousCrashTitle.Text = _lastCrashAnalysis.Title;
+        PreviousCrashSummary.Text = _lastCrashAnalysis.Summary;
+        PreviousCrashConfidence.Text = "判斷強度：" + _lastCrashAnalysis.Confidence;
+        IncidentReadStatus.Text = _incidentRead.ReadSucceeded
+            ? $"Windows Event Log：已讀到 {_incidentRead.Events.Count} 筆相關事件。"
+            : "Windows Event Log 目前讀取失敗；仍保留 heartbeat / Flight Recorder。原因：" + _incidentRead.Error;
+        IncidentTimelineList.ItemsSource = BuildIncidentTimeline(_session.PreviousSession, _incidentRead.Events);
+        ReliabilityList.ItemsSource = _crashAnalyzer.BuildReliabilityHistory(_incidentRead.Events);
+
+        if (_session.PreviousSession is { GracefulExit: false } && _lastCrashAnalysis.Code != "no-baseline")
+            _notifications.Add("上一輪狀態分析", _lastCrashAnalysis.Title + "。" + _lastCrashAnalysis.Confidence, "incident");
+    }
+
+    IReadOnlyList<string> BuildIncidentTimeline(SessionState? previous, IReadOnlyList<IncidentEvent> events)
+    {
+        var rows = new List<(DateTimeOffset Time, string Text)>();
+        DateTimeOffset from;
+        DateTimeOffset to;
+        if (previous is not null)
+        {
+            rows.Add((previous.StartedAt, "Memory Manager 上一輪啟動"));
+            rows.Add((previous.HeartbeatAt, "Memory Manager 最後 heartbeat"));
+            if (previous.EndedAt.HasValue) rows.Add((previous.EndedAt.Value, "Memory Manager 寫入正常結束標記"));
+            from = previous.HeartbeatAt - TimeSpan.FromMinutes(20);
+            to = previous.HeartbeatAt + TimeSpan.FromMinutes(90);
+        }
+        else
+        {
+            from = DateTimeOffset.Now - TimeSpan.FromHours(6);
+            to = DateTimeOffset.Now;
+        }
+
+        foreach (var e in events.Where(e => e.Time >= from && e.Time <= to).Take(60))
+            rows.Add((e.Time, $"Event {e.EventId} · {PreviousCrashAnalyzer.FriendlyCategory(e.Category)} · {e.Summary}"));
+
+        return rows.OrderBy(x => x.Time).Select(x => $"{x.Time:yyyy-MM-dd HH:mm:ss}  {x.Text}").ToList();
     }
 
     async void CheckUpdate_Click(object s, RoutedEventArgs e) => await CheckUpdates(false);
@@ -205,7 +266,7 @@ public partial class MainWindow : Window
             if (r.HasUpdate)
             {
                 _notifications.Add("有新版可用", $"{r.Tag} 已發布。可到 Releases 查看新功能與改進。", "update", true);
-                _logs.Write("更新", $"發現新版 {r.Tag}");
+                Record("更新", $"發現新版 {r.Tag}");
             }
             else if (!quiet)
             {
@@ -214,16 +275,17 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            _logs.Write("錯誤", "更新檢查失敗：" + ex.Message);
+            Record("錯誤", "更新檢查失敗：" + ex.Message);
             if (!quiet) _notifications.Add("更新檢查失敗", "目前無法連線 GitHub；不影響本機功能。", "warn");
         }
     }
 
     void ExportIncident_Click(object s, RoutedEventArgs e)
     {
-        var p = _flight.ExportIncidentBundle(_logs);
-        _notifications.Add("事故資料已匯出", $"已放到 {p}");
-        _logs.Write("診斷", "已匯出 Incident Bundle：" + p);
+        var center = _lastCrashAnalysis?.AnchorTime ?? DateTimeOffset.Now;
+        var p = _flight.ExportIncidentBundle(_logs, _eventLogs, center);
+        _notifications.Add("事故資料已匯出", $"只匯出事故附近的小時間窗：{p}");
+        Record("診斷", "已匯出 Incident-only Support Bundle：" + p);
     }
 
     void SampleCombo_SelectionChanged(object s, SelectionChangedEventArgs e)
@@ -231,7 +293,7 @@ public partial class MainWindow : Window
         if (!IsLoaded) return;
         var ms = ParseMs((SampleCombo.SelectedItem as ComboBoxItem)?.Content?.ToString(), 10);
         _telemetry.Start(ms);
-        _logs.Write("設定", $"Telemetry 改為 {ms} ms");
+        Record("設定", $"Telemetry 改為 {ms} ms");
     }
 
     void UiCombo_SelectionChanged(object s, SelectionChangedEventArgs e)
@@ -240,6 +302,7 @@ public partial class MainWindow : Window
         var txt = (UiCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "250";
         _uiTimer.Interval = TimeSpan.FromMilliseconds(ParseMs(txt, 250));
         AdaptiveExplainText.Text = "手動模式：畫面固定每 " + (int)_uiTimer.Interval.TotalMilliseconds + " ms 更新。";
+        _flight.RecordAction("settings", "ui-refresh=" + (int)_uiTimer.Interval.TotalMilliseconds + "ms");
     }
 
     void ThemeCombo_SelectionChanged(object s, SelectionChangedEventArgs e)
@@ -247,7 +310,13 @@ public partial class MainWindow : Window
         if (!IsLoaded) return;
         var light = (ThemeCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() == "淺色";
         ApplyTheme(light);
-        _logs.Write("設定", "外觀改為" + (light ? "淺色" : "深色") + "。");
+        Record("設定", "外觀改為" + (light ? "淺色" : "深色") + "。");
+    }
+
+    void Record(string category, string message)
+    {
+        _logs.Write(category, message);
+        _flight.RecordAction(category, message);
     }
 
     static void ApplyTheme(bool light)
