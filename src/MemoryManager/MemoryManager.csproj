@@ -15,7 +15,10 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <PublishTrimmed>false</PublishTrimmed>
     <Version>0.9.0</Version>
-    <FileVersion>0.9.0.28</FileVersion>
+    <FileVersion>0.9.0.29</FileVersion>
     <AssemblyVersion>0.9.0.0</AssemblyVersion>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Diagnostics.EventLog" Version="8.0.1" />
+  </ItemGroup>
 </Project>
