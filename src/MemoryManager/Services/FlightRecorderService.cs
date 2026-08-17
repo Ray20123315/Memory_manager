@@ -6,6 +6,7 @@ namespace Ray.MemoryManager.Services;
 
 public sealed record FlightFrame(DateTimeOffset Timestamp, ulong AvailablePhysical, ulong CommitTotal, ulong CommitLimit, string ForegroundProcess);
 public sealed record RecorderAction(DateTimeOffset Timestamp, string Category, string Message);
+public sealed record PersistentFlightRecord(string Type, DateTimeOffset Timestamp, ulong AvailablePhysical, ulong CommitTotal, ulong CommitLimit, string ForegroundProcess, string Category, string Message);
 
 public sealed class FlightRecorderService
 {
@@ -13,7 +14,18 @@ public sealed class FlightRecorderService
     readonly LinkedList<RecorderAction> _actions = new();
     readonly object _gate = new();
     readonly ForegroundProcessService _foreground = new();
+    readonly string _journalPath;
     DateTimeOffset _lastFrameAt = DateTimeOffset.MinValue;
+    DateTimeOffset _lastPersistAt = DateTimeOffset.MinValue;
+
+    public FlightRecorderService(string? journalPath = null)
+    {
+        _journalPath = journalPath ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Ray", "MemoryManager", "flight", "flight-recorder.jsonl");
+        Directory.CreateDirectory(Path.GetDirectoryName(_journalPath)!);
+        RotateJournalIfNeeded();
+    }
 
     public void Add(MemorySample sample)
     {
@@ -21,8 +33,15 @@ public sealed class FlightRecorderService
         {
             if (sample.Timestamp - _lastFrameAt < TimeSpan.FromMilliseconds(250)) return;
             _lastFrameAt = sample.Timestamp;
-            _frames.AddLast(new(sample.Timestamp, sample.AvailablePhysical, sample.CommitTotal, sample.CommitLimit, _foreground.GetForegroundProcessName()));
+            var frame = new FlightFrame(sample.Timestamp, sample.AvailablePhysical, sample.CommitTotal, sample.CommitLimit, _foreground.GetForegroundProcessName());
+            _frames.AddLast(frame);
             while (_frames.Count > 7200) _frames.RemoveFirst();
+
+            if (sample.Timestamp - _lastPersistAt >= TimeSpan.FromSeconds(1))
+            {
+                _lastPersistAt = sample.Timestamp;
+                AppendPersistent(new("frame", frame.Timestamp, frame.AvailablePhysical, frame.CommitTotal, frame.CommitLimit, frame.ForegroundProcess, string.Empty, string.Empty));
+            }
         }
     }
 
@@ -30,8 +49,10 @@ public sealed class FlightRecorderService
     {
         lock (_gate)
         {
-            _actions.AddLast(new(DateTimeOffset.Now, category, message));
+            var action = new RecorderAction(DateTimeOffset.Now, category, message);
+            _actions.AddLast(action);
             while (_actions.Count > 300) _actions.RemoveFirst();
+            AppendPersistent(new("action", action.Timestamp, 0, 0, 0, string.Empty, action.Category, action.Message));
         }
     }
 
@@ -52,6 +73,30 @@ public sealed class FlightRecorderService
         }
     }
 
+    public IReadOnlyList<PersistentFlightRecord> ReadPersistent(DateTimeOffset from, DateTimeOffset to, int max = 5000)
+    {
+        var result = new List<PersistentFlightRecord>();
+        foreach (var path in new[] { _journalPath + ".prev", _journalPath })
+        {
+            if (!File.Exists(path)) continue;
+            try
+            {
+                foreach (var line in File.ReadLines(path))
+                {
+                    if (result.Count >= max) break;
+                    try
+                    {
+                        var item = JsonSerializer.Deserialize<PersistentFlightRecord>(line);
+                        if (item is not null && item.Timestamp >= from && item.Timestamp <= to) result.Add(item);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+        }
+        return result.OrderBy(x => x.Timestamp).TakeLast(max).ToList();
+    }
+
     public string ExportIncidentBundle(LogService logs, WindowsEventLogService? eventLogs = null, DateTimeOffset? center = null)
     {
         var anchor = center ?? DateTimeOffset.Now;
@@ -65,6 +110,7 @@ public sealed class FlightRecorderService
             actions = _actions.Where(x => x.Timestamp >= from && x.Timestamp <= to).ToArray();
         }
 
+        var persisted = ReadPersistent(from, to);
         var eventResult = eventLogs?.ReadRecent(TimeSpan.FromDays(7), 400);
         var incidents = eventResult?.Events.Where(x => x.Time >= from && x.Time <= to).OrderBy(x => x.Time).ToArray() ?? [];
         var recentLogs = logs.ReadRecent(600)
@@ -82,7 +128,8 @@ public sealed class FlightRecorderService
             incident_center = anchor,
             window = new { from, to },
             note = "只匯出事故前後的小時間窗，避免把不相關的長期資料整包帶走。",
-            flight_frames = frames,
+            persisted_flight_records = persisted,
+            current_session_frames = frames,
             manager_actions = actions,
             windows_events = incidents,
             app_logs = recentLogs,
@@ -90,5 +137,25 @@ public sealed class FlightRecorderService
         };
         File.WriteAllText(path, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
         return path;
+    }
+
+    void AppendPersistent(PersistentFlightRecord item)
+    {
+        try
+        {
+            RotateJournalIfNeeded();
+            File.AppendAllText(_journalPath, JsonSerializer.Serialize(item) + Environment.NewLine);
+        }
+        catch { }
+    }
+
+    void RotateJournalIfNeeded()
+    {
+        try
+        {
+            if (!File.Exists(_journalPath) || new FileInfo(_journalPath).Length < 4 * 1024 * 1024) return;
+            File.Move(_journalPath, _journalPath + ".prev", true);
+        }
+        catch { }
     }
 }
