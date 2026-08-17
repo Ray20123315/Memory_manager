@@ -12,6 +12,10 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <PublishTrimmed>false</PublishTrimmed>
+    <Version>0.9.0-beta.29</Version>
+    <FileVersion>0.9.0.29</FileVersion>
+    <AssemblyVersion>0.9.0.0</AssemblyVersion>
+    <InformationalVersion>0.9.0-beta.29</InformationalVersion>
   </PropertyGroup>
   <ItemGroup><EmbeddedResource Include="Payload\MemoryManager.exe" LogicalName="MemoryManager.exe" /></ItemGroup>
 </Project>
