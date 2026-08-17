@@ -3,7 +3,14 @@ using System.Text.Json;
 
 namespace Ray.MemoryManager.Services;
 
-public sealed record GameProfile(string ProcessName, string DisplayName, string Source, bool Enabled, DateTimeOffset CreatedAt);
+public sealed record GameProfile(string ProcessName, string DisplayName, string Source, bool Enabled, DateTimeOffset CreatedAt)
+{
+    public override string ToString()
+    {
+        var source = Source == "manual" ? "手動加入" : Source == "auto-path" ? "由遊戲安裝路徑偵測" : Source;
+        return $"{DisplayName} · {source} · {(Enabled ? "保護啟用" : "停用")}";
+    }
+}
 
 public sealed class GameProfileService
 {
