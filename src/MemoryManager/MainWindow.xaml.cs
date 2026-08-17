@@ -49,10 +49,7 @@ public partial class MainWindow : Window
         Closed += (_, _) => { _telemetry.Dispose(); _notifications.Dispose(); };
     }
 
-    void Nav_Click(object sender, RoutedEventArgs e)
-    {
-        ShowPage((sender as WpfButton)?.Tag?.ToString());
-    }
+    void Nav_Click(object sender, RoutedEventArgs e) => ShowPage((sender as WpfButton)?.Tag?.ToString());
 
     void ShowPage(string? tag)
     {
@@ -111,7 +108,7 @@ public partial class MainWindow : Window
 
         if (AdaptiveRefreshCheck.IsChecked == true)
         {
-            var visible = IsVisible && WindowState != WindowState.Minimized;
+            var visible = IsVisible && WindowState != System.Windows.WindowState.Minimized;
             var ms = _adaptive.ChooseUiIntervalMs(visible, IsActive, gameMode: false, s);
             if ((int)_uiTimer.Interval.TotalMilliseconds != ms)
                 _uiTimer.Interval = TimeSpan.FromMilliseconds(ms);
@@ -123,8 +120,7 @@ public partial class MainWindow : Window
             RefreshProcesses();
             _lastProcessRefresh = DateTimeOffset.Now;
         }
-        if (DateTimeOffset.Now - _lastPageFileRefresh > TimeSpan.FromMinutes(1))
-            RefreshPageFileHealth();
+        if (DateTimeOffset.Now - _lastPageFileRefresh > TimeSpan.FromMinutes(1)) RefreshPageFileHealth();
     }
 
     void RefreshPageFileHealth()
