@@ -51,22 +51,15 @@ public sealed class OemControlService
 
     static string? FindMsiCenterShortcut()
     {
-        var roots = new[]
+        var common = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu), "Programs");
+        var user = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), "Programs");
+        var candidates = new[]
         {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu), "Programs"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), "Programs")
+            Path.Combine(common, "MSI Center.lnk"),
+            Path.Combine(common, "MSI Center", "MSI Center.lnk"),
+            Path.Combine(user, "MSI Center.lnk"),
+            Path.Combine(user, "MSI Center", "MSI Center.lnk")
         };
-        foreach (var root in roots)
-        {
-            try
-            {
-                if (!Directory.Exists(root)) continue;
-                var match = Directory.EnumerateFiles(root, "*.lnk", SearchOption.AllDirectories)
-                    .FirstOrDefault(x => Path.GetFileNameWithoutExtension(x).Equals("MSI Center", StringComparison.OrdinalIgnoreCase));
-                if (match is not null) return match;
-            }
-            catch { }
-        }
-        return null;
+        return candidates.FirstOrDefault(File.Exists);
     }
 }
