@@ -12,6 +12,7 @@
                     <TextBlock Text="beta.29 dev · Ray20123315" Foreground="{DynamicResource Muted}" Margin="0,2,0,20"/>
                     <Button Content="總覽" Tag="dashboard" Click="Nav_Click"/>
                     <Button Content="程式" Tag="processes" Click="Nav_Click"/>
+                    <Button Content="遊戲 / 規則" Tag="game" Click="Nav_Click"/>
                     <Button Content="通知" Tag="notifications" Click="Nav_Click"/>
                     <Button Content="Log" Tag="logs" Click="Nav_Click"/>
                     <Button Content="事故" Tag="incidents" Click="Nav_Click"/>
@@ -54,10 +55,36 @@
             <Grid x:Name="ProcessesPage" Visibility="Collapsed">
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                 <StackPanel><TextBlock Text="程式" FontSize="32" FontWeight="SemiBold"/><TextBlock Text="Commit 是 Windows 真正為程式承諾的私人記憶體；Δ 則看最近變大或變小多少。" Foreground="{DynamicResource Muted}"/><Button Content="重新整理" HorizontalAlignment="Left" Click="RefreshProcesses_Click"/></StackPanel>
-                <DataGrid Grid.Row="1" x:Name="ProcessGrid" AutoGenerateColumns="False" IsReadOnly="True" Margin="0,14" Background="{DynamicResource Panel}">
+                <DataGrid Grid.Row="1" x:Name="ProcessGrid" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" Margin="0,14" Background="{DynamicResource Panel}">
                     <DataGrid.Columns><DataGridTextColumn Header="程式" Binding="{Binding Name}" Width="2*"/><DataGridTextColumn Header="PID" Binding="{Binding Pid}"/><DataGridTextColumn Header="Working Set" Binding="{Binding WorkingSetText}"/><DataGridTextColumn Header="Private" Binding="{Binding PrivateText}"/><DataGridTextColumn Header="Commit" Binding="{Binding CommitText}"/><DataGridTextColumn Header="Commit Δ" Binding="{Binding DeltaText}"/><DataGridTextColumn Header="判斷" Binding="{Binding Risk}" Width="*"/></DataGrid.Columns>
                 </DataGrid>
-                <TextBlock Grid.Row="2" x:Name="ProcessAdviceText" TextWrapping="Wrap" Foreground="{DynamicResource Muted}"/>
+                <StackPanel Grid.Row="2"><TextBlock x:Name="ProcessAdviceText" TextWrapping="Wrap" Foreground="{DynamicResource Muted}"/><Button Content="把選取程式加入背景 Memory Rule" HorizontalAlignment="Left" Click="AddSelectedProcessRule_Click"/></StackPanel>
+            </Grid>
+            <Grid x:Name="GameRulesPage" Visibility="Collapsed">
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                <StackPanel>
+                    <TextBlock Text="Game Memory Reserve V2 / Per-App Rules" FontSize="30" FontWeight="SemiBold"/>
+                    <TextBlock Text="這不是鎖 RAM。只有你建立規則並打開總開關後，才會把符合條件的背景 App Memory Priority 暫時降低；前景、遊戲、反作弊、語音、輸入與 Windows 核心程序保持原狀。" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,4,0,12"/>
+                    <StackPanel Orientation="Horizontal">
+                        <CheckBox x:Name="GameMemoryMasterCheck" IsChecked="False" Content="啟用背景 Memory Rule（預設關閉）" Foreground="{DynamicResource Text}" Margin="4" Click="GameMemoryMasterCheck_Click"/>
+                        <CheckBox x:Name="GameAutoDetectCheck" IsChecked="True" Content="自動偵測常見遊戲安裝路徑" Foreground="{DynamicResource Text}" Margin="18,4,4,4" Click="GameAutoDetectCheck_Click"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal"><Button Content="立即重新評估" Click="RefreshGameRules_Click"/><Button Content="將目前前景程式加入遊戲 Profile" Click="AddForegroundGameProfile_Click"/></StackPanel>
+                </StackPanel>
+                <Border Grid.Row="1" Background="{DynamicResource Panel}" Margin="0,12,0,10" Padding="16" CornerRadius="12">
+                    <StackPanel><TextBlock x:Name="GameForegroundText" Text="前景程式：—"/><TextBlock x:Name="GameSummaryText" Text="目前沒有偵測到執行中的遊戲 Profile。" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,4,0,0"/><TextBlock x:Name="GamePolicyStateText" Text="規則總開關：停用" Foreground="{DynamicResource Muted}" Margin="0,4,0,0"/></StackPanel>
+                </Border>
+                <TabControl Grid.Row="2" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Outline}">
+                    <TabItem Header="遊戲 Profiles">
+                        <DockPanel Margin="8"><StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"><Button Content="切換選取 Profile 啟用狀態" Click="ToggleSelectedGameProfile_Click"/></StackPanel><ListBox x:Name="GameProfileList" SelectionMode="Single" Background="{DynamicResource Panel}" BorderThickness="0"/></DockPanel>
+                    </TabItem>
+                    <TabItem Header="Per-App Rules">
+                        <DockPanel Margin="8"><StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"><Button Content="啟用選取規則" Click="EnableSelectedMemoryRule_Click"/><Button Content="停用選取規則" Click="DisableSelectedMemoryRule_Click"/><Button Content="刪除選取規則" Click="RemoveSelectedMemoryRule_Click"/></StackPanel><ListBox x:Name="MemoryRuleList" SelectionMode="Single" Background="{DynamicResource Panel}" BorderThickness="0"/></DockPanel>
+                    </TabItem>
+                    <TabItem Header="本輪判斷">
+                        <ListBox x:Name="GameDecisionList" Background="{DynamicResource Panel}" BorderThickness="0"/>
+                    </TabItem>
+                </TabControl>
             </Grid>
             <Grid x:Name="NotificationsPage" Visibility="Collapsed">
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
