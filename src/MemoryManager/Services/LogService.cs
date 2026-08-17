@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Text;
 namespace Ray.MemoryManager.Services;
 public sealed class LogService
@@ -11,6 +12,12 @@ public sealed class LogService
     public IReadOnlyList<(DateTimeOffset Time,string Category,string Message)> ReadRecent(int max=200)
     {
         if (!File.Exists(CurrentLogPath)) return [];
-        return File.ReadLines(CurrentLogPath).Reverse().Take(max).Select(line => { var p=line.Split('\t',3); return (DateTimeOffset.TryParse(p.ElementAtOrDefault(0),out var t)?t:DateTimeOffset.Now,p.ElementAtOrDefault(1)??"App",p.ElementAtOrDefault(2)??line); }).ToList();
+        return File.ReadLines(CurrentLogPath).Reverse().Take(max).Select(line => {
+            var p=line.Split('\t',3);
+            var rawTime = p.Length > 0 ? p[0] : string.Empty;
+            var category = p.Length > 1 ? p[1] : "App";
+            var message = p.Length > 2 ? p[2] : line;
+            return (DateTimeOffset.TryParse(rawTime,out var t)?t:DateTimeOffset.Now,category,message);
+        }).ToList();
     }
 }
