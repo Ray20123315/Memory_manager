@@ -54,6 +54,23 @@ public static class SelfTestService
             checks.Add(new { name = "game-safety-invariants", ok = safetyOk, foregroundProtected, antiCheatProtected, voiceProtected, normalAllowed });
             ok &= safetyOk;
 
+            var versionCompareOk = UpdateService.CompareTag("v0.9.0-beta.30", UpdateService.CurrentTag) > 0
+                && UpdateService.CompareTag("v0.9.0-beta.28", UpdateService.CurrentTag) < 0
+                && UpdateService.CompareTag("v0.9.0", UpdateService.CurrentTag) > 0;
+            checks.Add(new { name = "update-version-ordering", ok = versionCompareOk, current = UpdateService.CurrentTag });
+            ok &= versionCompareOk;
+
+            var liveUpdate = new UpdateService().CheckAsync(includePrereleases: true).GetAwaiter().GetResult();
+            var digestAssets = liveUpdate.Releases.SelectMany(x => x.Assets).Where(x => x.Digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)).ToList();
+            var liveUpdateOk = string.IsNullOrWhiteSpace(liveUpdate.Error) && liveUpdate.Releases.Count > 0 && digestAssets.Count > 0;
+            checks.Add(new { name = "update-metadata-live", ok = liveUpdateOk, error = liveUpdate.Error, latest = liveUpdate.Latest?.Tag ?? string.Empty, releases = liveUpdate.Releases.Count, digestAssets = digestAssets.Count, sampleDigest = digestAssets.FirstOrDefault()?.Digest ?? string.Empty });
+            ok &= liveUpdateOk;
+
+            var oem = new OemControlService().Detect();
+            var oemOk = !string.IsNullOrWhiteSpace(oem.Summary) && !string.IsNullOrWhiteSpace(oem.LaunchTarget);
+            checks.Add(new { name = "oem-safe-detection", ok = oemOk, oem.Manufacturer, oem.ProductName, oem.IsMsiDevice, oem.MsiCenterFound });
+            ok &= oemOk;
+
             var tempRoot = Path.Combine(Path.GetTempPath(), "memory-manager-selftest-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempRoot);
             try
@@ -95,6 +112,19 @@ public static class SelfTestService
                 checks.Add(new { name = "per-app-rule-persistence", ok = ruleOk, count = rulesReloaded.Rules.Count });
                 ok &= ruleOk;
 
+                var settingsDir = Path.Combine(tempRoot, "settings");
+                var backupDir = Path.Combine(tempRoot, "backups");
+                Directory.CreateDirectory(settingsDir);
+                var settingFile = Path.Combine(settingsDir, "sample.json");
+                File.WriteAllText(settingFile, "before");
+                var backupService = new SettingsBackupService(settingsDir, backupDir);
+                var backupPath = backupService.CreateBackup();
+                File.WriteAllText(settingFile, "after");
+                var restoreOk = backupService.RestoreLatest(out var restoreMessage);
+                var backupOk = restoreOk && File.ReadAllText(settingFile) == "before" && backupService.ListBackups().Count >= 2;
+                checks.Add(new { name = "settings-backup-rollback", ok = backupOk, backup = Path.GetFileName(backupPath), backups = backupService.ListBackups().Count, restoreMessage });
+                ok &= backupOk;
+
                 Process? child = null;
                 try
                 {
@@ -106,10 +136,10 @@ public static class SelfTestService
                     var target = before == 2 ? 3u : 2u;
                     var change = priority.ApplyTemporary(child.Id, target);
                     var changedOk = priority.TryGet(child.Id, out var changed, out var changedError) && changed == target;
-                    var restoreCall = priority.Restore(child.Id, out var restoreMessage);
+                    var restoreCall = priority.Restore(child.Id, out var restoreMessage2);
                     var restoredOk = priority.TryGet(child.Id, out var restored, out var restoredError) && restored == before;
                     var roundtripOk = beforeOk && change.Applied && changedOk && restoreCall && restoredOk;
-                    checks.Add(new { name = "memory-priority-roundtrip", ok = roundtripOk, before, target, changed, restored, beforeError, changedError, restoredError, change.Message, restoreMessage });
+                    checks.Add(new { name = "memory-priority-roundtrip", ok = roundtripOk, before, target, changed, restored, beforeError, changedError, restoredError, change.Message, restoreMessage = restoreMessage2 });
                     ok &= roundtripOk;
                 }
                 finally
