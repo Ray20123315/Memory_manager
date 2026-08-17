@@ -14,6 +14,7 @@
                     <Button Content="程式" Tag="processes" Click="Nav_Click"/>
                     <Button Content="通知" Tag="notifications" Click="Nav_Click"/>
                     <Button Content="Log" Tag="logs" Click="Nav_Click"/>
+                    <Button Content="事故" Tag="incidents" Click="Nav_Click"/>
                     <Button Content="設定" Tag="settings" Click="Nav_Click"/>
                     <Button Content="關於" Tag="about" Click="Nav_Click"/>
                 </StackPanel>
@@ -67,6 +68,21 @@
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                 <StackPanel><TextBlock Text="Log（簡單版）" FontSize="32" FontWeight="SemiBold"/><TextBlock Text="這裡只用白話顯示『什麼時候、發生什麼事、要不要擔心』。" Foreground="{DynamicResource Muted}"/><StackPanel Orientation="Horizontal"><Button Content="重新整理 Log" Click="RefreshLogs_Click"/><Button Content="開啟 Log 資料夾" Click="OpenLogs_Click"/></StackPanel></StackPanel>
                 <ListBox Grid.Row="1" x:Name="LogList" Margin="0,16,0,0" Background="{DynamicResource Panel}" BorderThickness="0"/>
+            </Grid>
+            <Grid x:Name="IncidentsPage" Visibility="Collapsed">
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                <StackPanel>
+                    <TextBlock Text="事故與可靠性" FontSize="32" FontWeight="SemiBold"/>
+                    <TextBlock Text="把上一輪 heartbeat、Windows 事件與 Memory Manager 紀錄排在同一條線上；只說證據能證明的事。" Foreground="{DynamicResource Muted}" TextWrapping="Wrap"/>
+                    <StackPanel Orientation="Horizontal"><Button Content="重新分析" Click="RefreshIncidents_Click"/><Button Content="匯出事故附近資料" Click="ExportIncident_Click"/></StackPanel>
+                </StackPanel>
+                <Border Grid.Row="1" Background="{DynamicResource Panel}" Margin="0,14,0,10" Padding="18" CornerRadius="12">
+                    <StackPanel><TextBlock Text="上一次發生什麼？" Foreground="{DynamicResource Muted}"/><TextBlock x:Name="PreviousCrashTitle" Text="正在分析…" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,4"/><TextBlock x:Name="PreviousCrashSummary" Text="—" TextWrapping="Wrap" Foreground="{DynamicResource Muted}"/><TextBlock x:Name="PreviousCrashConfidence" Text="—" Margin="0,8,0,0"/><TextBlock x:Name="IncidentReadStatus" Text="—" Foreground="{DynamicResource Muted}" Margin="0,4,0,0"/></StackPanel>
+                </Border>
+                <TabControl Grid.Row="2" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Outline}">
+                    <TabItem Header="事故時間線"><ListBox x:Name="IncidentTimelineList" Background="{DynamicResource Panel}" BorderThickness="0"/></TabItem>
+                    <TabItem Header="可靠性歷史"><ListBox x:Name="ReliabilityList" Background="{DynamicResource Panel}" BorderThickness="0"/></TabItem>
+                </TabControl>
             </Grid>
             <Grid x:Name="SettingsPage" Visibility="Collapsed">
                 <StackPanel><TextBlock Text="設定" FontSize="32" FontWeight="SemiBold"/><TextBlock Text="進階選項仍會用白話說明，不需要懂 Windows 核心名詞。" Foreground="{DynamicResource Muted}" Margin="0,4,0,18"/>
