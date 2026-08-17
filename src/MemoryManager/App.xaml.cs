@@ -1,12 +1,11 @@
 using Ray.MemoryManager.Services;
 using System.IO;
-using System.Windows;
 
 namespace Ray.MemoryManager;
 
-public partial class App : Application
+public partial class App : System.Windows.Application
 {
-    protected override void OnStartup(StartupEventArgs e)
+    protected override void OnStartup(System.Windows.StartupEventArgs e)
     {
         base.OnStartup(e);
 
