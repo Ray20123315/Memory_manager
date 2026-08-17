@@ -8,7 +8,7 @@ on:
 permissions:
   contents: write
 concurrency:
-  group: beta28-release
+  group: beta29-release
   cancel-in-progress: true
 jobs:
   build-release:
@@ -48,6 +48,26 @@ jobs:
           if (!(Test-Path artifacts/setup/MemoryManagerSetup.exe)) { throw 'MemoryManagerSetup.exe was not produced' }
           Copy-Item artifacts/setup/MemoryManagerSetup.exe artifacts/MemoryManagerSetup.exe -Force
           Copy-Item artifacts/app/MemoryManager.exe artifacts/MemoryManager.exe -Force
+      - name: Installer V2 install repair uninstall audit
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path artifacts/setup/MemoryManagerSetup.exe).Path
+          $target = Join-Path $env:RUNNER_TEMP 'MemoryManager-InstallerV2-Test'
+          if(Test-Path $target){Remove-Item $target -Recurse -Force}
+          $p = Start-Process -FilePath $setup -ArgumentList @('--install','--quiet','--target',$target,'--no-shell') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "quiet install failed: $($p.ExitCode)"}
+          foreach($f in 'MemoryManager.exe','MemoryManagerSetup.exe','install-state.txt'){if(!(Test-Path (Join-Path $target $f))){throw "install missing $f"}}
+          $sourceHash=(Get-FileHash artifacts/app/MemoryManager.exe -Algorithm SHA256).Hash
+          $installedHash=(Get-FileHash (Join-Path $target 'MemoryManager.exe') -Algorithm SHA256).Hash
+          if($sourceHash -ne $installedHash){throw 'installed payload hash differs from build payload'}
+          $p = Start-Process -FilePath $setup -ArgumentList @('--repair','--quiet','--target',$target,'--no-shell') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "quiet repair failed: $($p.ExitCode)"}
+          $repairedHash=(Get-FileHash (Join-Path $target 'MemoryManager.exe') -Algorithm SHA256).Hash
+          if($sourceHash -ne $repairedHash){throw 'repair payload hash differs from build payload'}
+          $p = Start-Process -FilePath $setup -ArgumentList @('--uninstall','--quiet','--target',$target,'--no-shell') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "quiet uninstall failed: $($p.ExitCode)"}
+          if(Test-Path $target){throw 'uninstall left test install directory behind'}
+          "Installer V2 cycle OK: install -> repair -> uninstall; payload sha256=$($sourceHash.ToLower())"
       - name: Optional Authenticode signing
         if: ${{ env.PFX_BASE64 != '' }}
         shell: pwsh
