@@ -1,4 +1,4 @@
-name: Build and publish beta.28
+name: Build and publish beta.29
 on:
   push:
     branches: [ main ]
@@ -8,7 +8,7 @@ on:
 permissions:
   contents: write
 concurrency:
-  group: beta28-release
+  group: beta29-release
   cancel-in-progress: true
 jobs:
   build-release:
@@ -29,6 +29,17 @@ jobs:
           if (!(Test-Path artifacts/app/MemoryManager.exe)) { throw 'MemoryManager.exe was not produced' }
           New-Item -ItemType Directory -Force installer/MemoryManagerSetup/Payload | Out-Null
           Copy-Item artifacts/app/MemoryManager.exe installer/MemoryManagerSetup/Payload/MemoryManager.exe -Force
+      - name: Run Windows self-test
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path artifacts/app/MemoryManager.exe).Path
+          $out = Join-Path $pwd 'artifacts/selftest.json'
+          $p = Start-Process -FilePath $exe -ArgumentList @('--self-test', $out) -Wait -PassThru
+          if ($p.ExitCode -ne 0) { if (Test-Path $out) { Get-Content $out }; throw "Self-test failed with exit code $($p.ExitCode)" }
+          if (!(Test-Path $out)) { throw 'Self-test JSON was not produced' }
+          $report = Get-Content $out -Raw | ConvertFrom-Json
+          if (-not $report.ok) { Get-Content $out; throw 'Self-test report returned ok=false' }
+          Get-Content $out
       - name: Build real installer
         shell: pwsh
         run: |
@@ -63,15 +74,17 @@ jobs:
         run: |
           if(!(Test-Path artifacts/MemoryManager.exe)){throw 'MemoryManager.exe missing'}
           if(!(Test-Path artifacts/MemoryManagerSetup.exe)){throw 'MemoryManagerSetup.exe missing'}
-          Get-Item artifacts/MemoryManager.exe, artifacts/MemoryManagerSetup.exe | Format-Table Name,Length
+          if(!(Test-Path artifacts/selftest.json)){throw 'selftest.json missing'}
+          Get-Item artifacts/MemoryManager.exe, artifacts/MemoryManagerSetup.exe, artifacts/SHA256SUMS.txt, artifacts/selftest.json | Format-Table Name,Length
       - name: Publish GitHub Release assets
+        if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release]') }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag='v0.9.0-beta.28'
+          $tag='v0.9.0-beta.29'
           if(gh release view $tag 2>$null){
             gh release upload $tag artifacts/MemoryManager.exe artifacts/MemoryManagerSetup.exe artifacts/SHA256SUMS.txt --clobber
           } else {
-            gh release create $tag artifacts/MemoryManager.exe artifacts/MemoryManagerSetup.exe artifacts/SHA256SUMS.txt --title 'Memory Manager v0.9.0-beta.28' --notes-file CHANGELOG.md --prerelease --target main
+            gh release create $tag artifacts/MemoryManager.exe artifacts/MemoryManagerSetup.exe artifacts/SHA256SUMS.txt --title 'Memory Manager v0.9.0-beta.29' --notes-file CHANGELOG.md --prerelease --target main
           }
