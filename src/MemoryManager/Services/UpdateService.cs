@@ -39,16 +39,7 @@ public sealed class UpdateService
                 return new(false, CurrentTag, null, [], $"GitHub Releases HTTP {(int)r.StatusCode}");
 
             var json = await r.Content.ReadAsStringAsync().ConfigureAwait(false);
-            using var doc = JsonDocument.Parse(json);
-            var releases = new List<ReleaseInfo>();
-            foreach (var root in doc.RootElement.EnumerateArray())
-            {
-                if (root.TryGetProperty("draft", out var draft) && draft.GetBoolean()) continue;
-                var prerelease = root.TryGetProperty("prerelease", out var pre) && pre.GetBoolean();
-                if (!includePrereleases && prerelease) continue;
-                releases.Add(ParseRelease(root));
-            }
-
+            var releases = ParseReleaseListJson(json, includePrereleases);
             var latest = releases.FirstOrDefault();
             var hasUpdate = latest is not null && CompareTag(latest.Tag, CurrentTag) > 0;
             return new(hasUpdate, CurrentTag, latest, releases, string.Empty);
@@ -57,6 +48,23 @@ public sealed class UpdateService
         {
             return new(false, CurrentTag, null, [], ex.Message);
         }
+    }
+
+    public static IReadOnlyList<ReleaseInfo> ParseReleaseListJson(string json, bool includePrereleases = true)
+    {
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            throw new FormatException("GitHub Releases response must be a JSON array.");
+
+        var releases = new List<ReleaseInfo>();
+        foreach (var root in doc.RootElement.EnumerateArray())
+        {
+            if (root.TryGetProperty("draft", out var draft) && draft.GetBoolean()) continue;
+            var prerelease = root.TryGetProperty("prerelease", out var pre) && pre.GetBoolean();
+            if (!includePrereleases && prerelease) continue;
+            releases.Add(ParseRelease(root));
+        }
+        return releases;
     }
 
     static ReleaseInfo ParseRelease(JsonElement root)
