@@ -1,0 +1,141 @@
+name: Build beta.30 Go UI Recovery
+
+on:
+  push:
+    branches:
+      - beta30-ui-recovery
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: beta30-go-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-gate:
+    runs-on: windows-2025
+    env:
+      SOURCE_DIR: beta30-source
+      RELEASE_TAG: v0.9.0-beta.30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.2'
+
+      - name: Reconstruct exact beta.30 source archive
+        shell: pwsh
+        run: |
+          python _source_parts/reconstruct_beta30_source.py
+          tar -xzf beta30-source-only.tar.gz
+          if (!(Test-Path beta30-source/go.mod)) { throw 'beta30-source/go.mod missing after extraction' }
+          if (!(Test-Path tests_beta30/gate_beta30.py)) { throw 'tests_beta30/gate_beta30.py missing after extraction' }
+
+      - name: Source preservation gate
+        shell: pwsh
+        run: |
+          $env:BETA30_SOURCE_ROOT = (Resolve-Path $env:SOURCE_DIR).Path
+          python tests_beta30/gate_beta30.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Windows Go tests including real per-user install lifecycle
+        shell: pwsh
+        working-directory: beta30-source
+        run: |
+          go test -count=1 ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Windows Go vet
+        shell: pwsh
+        working-directory: beta30-source
+        run: |
+          go vet -unsafeptr=false ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Deterministic Windows build and PE resource verification
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Push-Location $env:SOURCE_DIR
+          go build -trimpath -ldflags='-s -w -H=windowsgui' -o ../artifacts/base_A.exe .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -trimpath -ldflags='-s -w -H=windowsgui' -o ../artifacts/base_B.exe .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+          $a=(Get-FileHash artifacts/base_A.exe -Algorithm SHA256).Hash
+          $b=(Get-FileHash artifacts/base_B.exe -Algorithm SHA256).Hash
+          if($a -ne $b){ throw "base builds differ: $a != $b" }
+          python tests_beta30/pe_resource_tool.py inject artifacts/base_A.exe beta30-source/assets/beta27_resource_donor.pe artifacts/final_A.exe
+          python tests_beta30/pe_resource_tool.py inject artifacts/base_B.exe beta30-source/assets/beta27_resource_donor.pe artifacts/final_B.exe
+          $fa=(Get-FileHash artifacts/final_A.exe -Algorithm SHA256).Hash
+          $fb=(Get-FileHash artifacts/final_B.exe -Algorithm SHA256).Hash
+          if($fa -ne $fb){ throw "resource builds differ: $fa != $fb" }
+          python tests_beta30/pe_resource_tool.py verify artifacts/final_A.exe --donor beta30-source/assets/beta27_resource_donor.pe --manifest beta30-source/assets/app.manifest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item artifacts/final_A.exe artifacts/MemoryManager_v0.9.0-beta.30.exe -Force
+          "final_sha256=$($fa.ToLower())"
+
+      - name: Package source and verify SHA256SUMS
+        shell: pwsh
+        run: |
+          Copy-Item beta30-source-only.tar.gz artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz -Force
+          $items=@('artifacts/MemoryManager_v0.9.0-beta.30.exe','artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz')
+          $lines=foreach($f in $items){ $h=(Get-FileHash $f -Algorithm SHA256).Hash.ToLower(); "$h  $([IO.Path]::GetFileName($f))" }
+          $lines | Set-Content artifacts/SHA256SUMS.txt
+          foreach($f in $items){
+            $name=[IO.Path]::GetFileName($f)
+            $actual=(Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
+            $recorded=(($lines | Where-Object { $_ -match ('\s+'+[regex]::Escape($name)+'$') } | Select-Object -First 1) -split '\s+')[0]
+            if($actual -ne $recorded){ throw "SHA256 mismatch for $name" }
+          }
+          Get-Content artifacts/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beta30-ui-recovery
+          path: |
+            artifacts/MemoryManager_v0.9.0-beta.30.exe
+            artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz
+            artifacts/SHA256SUMS.txt
+
+      - name: Commit browsable verified source tree to staging branch
+        if: github.ref == 'refs/heads/beta30-ui-recovery'
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add beta30-source tests_beta30
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            'Browsable beta30 source tree already matches verified archive.'
+            exit 0
+          }
+          git commit -m '[expand-source] Publish verified beta30 source tree'
+          git push origin HEAD:beta30-ui-recovery
+
+      - name: Publish beta.30 GitHub prerelease
+        if: github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-beta30]')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag=$env:RELEASE_TAG
+          $notes=@'
+          beta.30 is rebuilt from the verified beta.27 Go + embedded WebView2 source and preserves the original UI architecture.
+
+          Changes include Notifications, beginner Log, reliable Open Log, GitHub Releases polling, default maximized main window, and immediate whole-application exit when the license is rejected.
+
+          The prerelease is unsigned unless a trusted Code Signing credential is configured.
+          '@
+          $notes | Set-Content artifacts/RELEASE_NOTES.md
+          if(gh release view $tag 2>$null){
+            gh release upload $tag artifacts/MemoryManager_v0.9.0-beta.30.exe artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz artifacts/SHA256SUMS.txt --clobber
+          } else {
+            gh release create $tag artifacts/MemoryManager_v0.9.0-beta.30.exe artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz artifacts/SHA256SUMS.txt --title 'Memory Manager v0.9.0-beta.30' --notes-file artifacts/RELEASE_NOTES.md --prerelease --target main
+          }
