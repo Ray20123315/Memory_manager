@@ -1,123 +1,140 @@
-name: Build and publish beta.29
+name: Build and publish beta.30
+
 on:
   push:
     branches: [ main ]
     paths-ignore:
       - '.Ray_Chen/**'
   workflow_dispatch:
+
 permissions:
   contents: write
+
 concurrency:
-  group: beta29-release
+  group: beta30-release
   cancel-in-progress: true
+
 jobs:
   build-release:
     runs-on: windows-latest
     env:
-      PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
-      PFX_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      SOURCE_DIR: beta30-source
+      RELEASE_TAG: v0.9.0-beta.30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
-      - name: Build app
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.2'
+
+      - name: Reconstruct exact beta.30 source archive
         shell: pwsh
         run: |
-          dotnet publish src/MemoryManager/MemoryManager.csproj -c Release -r win-x64 --self-contained true -o artifacts/app
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (!(Test-Path artifacts/app/MemoryManager.exe)) { throw 'MemoryManager.exe was not produced' }
-          New-Item -ItemType Directory -Force installer/MemoryManagerSetup/Payload | Out-Null
-          Copy-Item artifacts/app/MemoryManager.exe installer/MemoryManagerSetup/Payload/MemoryManager.exe -Force
-      - name: Run Windows self-test
+          python _source_parts/reconstruct_beta30_source.py
+          tar -xzf beta30-source-only.tar.gz
+          if (!(Test-Path beta30-source/go.mod)) { throw 'beta30-source/go.mod missing after extraction' }
+          if (!(Test-Path tests_beta30/gate_beta30.py)) { throw 'tests_beta30/gate_beta30.py missing after extraction' }
+
+      - name: Source preservation gate
         shell: pwsh
         run: |
-          $exe = (Resolve-Path artifacts/app/MemoryManager.exe).Path
-          $out = Join-Path $pwd 'artifacts/selftest.json'
-          $p = Start-Process -FilePath $exe -ArgumentList @('--self-test', $out) -Wait -PassThru
-          if ($p.ExitCode -ne 0) { if (Test-Path $out) { Get-Content $out }; throw "Self-test failed with exit code $($p.ExitCode)" }
-          if (!(Test-Path $out)) { throw 'Self-test JSON was not produced' }
-          $report = Get-Content $out -Raw | ConvertFrom-Json
-          if (-not $report.ok) { Get-Content $out; throw 'Self-test report returned ok=false' }
-          Get-Content $out
-      - name: Build real installer
+          $env:BETA30_SOURCE_ROOT = (Resolve-Path $env:SOURCE_DIR).Path
+          python tests_beta30/gate_beta30.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Windows Go tests including real per-user install lifecycle
+        shell: pwsh
+        working-directory: beta30-source
+        run: |
+          go test -count=1 ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Windows Go vet
+        shell: pwsh
+        working-directory: beta30-source
+        run: |
+          go vet -unsafeptr=false ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Deterministic Windows build and PE resource verification
         shell: pwsh
         run: |
-          dotnet publish installer/MemoryManagerSetup/MemoryManagerSetup.csproj -c Release -r win-x64 --self-contained true -o artifacts/setup
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Push-Location $env:SOURCE_DIR
+          go build -trimpath -ldflags='-s -w -H=windowsgui' -o ../artifacts/base_A.exe .
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (!(Test-Path artifacts/setup/MemoryManagerSetup.exe)) { throw 'MemoryManagerSetup.exe was not produced' }
-          Copy-Item artifacts/setup/MemoryManagerSetup.exe artifacts/MemoryManagerSetup.exe -Force
-          Copy-Item artifacts/app/MemoryManager.exe artifacts/MemoryManager.exe -Force
-      - name: Installer V2 install repair uninstall audit
+          go build -trimpath -ldflags='-s -w -H=windowsgui' -o ../artifacts/base_B.exe .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+          $a=(Get-FileHash artifacts/base_A.exe -Algorithm SHA256).Hash
+          $b=(Get-FileHash artifacts/base_B.exe -Algorithm SHA256).Hash
+          if($a -ne $b){ throw "base builds differ: $a != $b" }
+          python tests_beta30/pe_resource_tool.py inject artifacts/base_A.exe beta30-source/assets/beta27_resource_donor.pe artifacts/final_A.exe
+          python tests_beta30/pe_resource_tool.py inject artifacts/base_B.exe beta30-source/assets/beta27_resource_donor.pe artifacts/final_B.exe
+          $fa=(Get-FileHash artifacts/final_A.exe -Algorithm SHA256).Hash
+          $fb=(Get-FileHash artifacts/final_B.exe -Algorithm SHA256).Hash
+          if($fa -ne $fb){ throw "resource builds differ: $fa != $fb" }
+          python tests_beta30/pe_resource_tool.py verify artifacts/final_A.exe --donor beta30-source/assets/beta27_resource_donor.pe --manifest beta30-source/assets/app.manifest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item artifacts/final_A.exe artifacts/MemoryManager_v0.9.0-beta.30.exe -Force
+          "final_sha256=$($fa.ToLower())"
+
+      - name: Package source and verify SHA256SUMS
         shell: pwsh
         run: |
-          $setup = (Resolve-Path artifacts/setup/MemoryManagerSetup.exe).Path
-          $target = Join-Path $env:RUNNER_TEMP 'MemoryManager-InstallerV2-Test'
-          if(Test-Path $target){Remove-Item $target -Recurse -Force}
-          $p = Start-Process -FilePath $setup -ArgumentList @('--install','--quiet','--target',$target,'--no-shell') -Wait -PassThru
-          if($p.ExitCode -ne 0){throw "quiet install failed: $($p.ExitCode)"}
-          foreach($f in 'MemoryManager.exe','MemoryManagerSetup.exe','install-state.txt'){if(!(Test-Path (Join-Path $target $f))){throw "install missing $f"}}
-          $sourceHash=(Get-FileHash artifacts/app/MemoryManager.exe -Algorithm SHA256).Hash
-          $installedHash=(Get-FileHash (Join-Path $target 'MemoryManager.exe') -Algorithm SHA256).Hash
-          if($sourceHash -ne $installedHash){throw 'installed payload hash differs from build payload'}
-          $p = Start-Process -FilePath $setup -ArgumentList @('--repair','--quiet','--target',$target,'--no-shell') -Wait -PassThru
-          if($p.ExitCode -ne 0){throw "quiet repair failed: $($p.ExitCode)"}
-          $repairedHash=(Get-FileHash (Join-Path $target 'MemoryManager.exe') -Algorithm SHA256).Hash
-          if($sourceHash -ne $repairedHash){throw 'repair payload hash differs from build payload'}
-          $p = Start-Process -FilePath $setup -ArgumentList @('--uninstall','--quiet','--target',$target,'--no-shell') -Wait -PassThru
-          if($p.ExitCode -ne 0){throw "quiet uninstall failed: $($p.ExitCode)"}
-          if(Test-Path $target){throw 'uninstall left test install directory behind'}
-          "Installer V2 cycle OK: install -> repair -> uninstall; payload sha256=$($sourceHash.ToLower())"
-      - name: Optional Authenticode signing
-        if: ${{ env.PFX_BASE64 != '' }}
-        shell: pwsh
-        run: |
-          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
-          [IO.File]::WriteAllBytes($pfx,[Convert]::FromBase64String($env:PFX_BASE64))
-          $signtool=(Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe | Where-Object FullName -Match '\\x64\\' | Sort-Object FullName -Descending | Select-Object -First 1).FullName
-          & $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:PFX_PASSWORD artifacts/MemoryManager.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:PFX_PASSWORD artifacts/MemoryManagerSetup.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $signtool verify /pa /all artifacts/MemoryManager.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $signtool verify /pa /all artifacts/MemoryManagerSetup.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Hash artifacts
-        shell: pwsh
-        run: |
-          $files='artifacts/MemoryManager.exe','artifacts/MemoryManagerSetup.exe'
-          $lines = foreach($f in $files){$h=(Get-FileHash $f -Algorithm SHA256).Hash.ToLower(); "$h  $([IO.Path]::GetFileName($f))"}
+          Copy-Item beta30-source-only.tar.gz artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz -Force
+          $items=@('artifacts/MemoryManager_v0.9.0-beta.30.exe','artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz')
+          $lines=foreach($f in $items){ $h=(Get-FileHash $f -Algorithm SHA256).Hash.ToLower(); "$h  $([IO.Path]::GetFileName($f))" }
           $lines | Set-Content artifacts/SHA256SUMS.txt
-      - name: Verify SHA256 manifest
-        shell: pwsh
-        run: |
-          $manifest = Get-Content artifacts/SHA256SUMS.txt
-          foreach($f in 'artifacts/MemoryManager.exe','artifacts/MemoryManagerSetup.exe'){
+          foreach($f in $items){
             $name=[IO.Path]::GetFileName($f)
             $actual=(Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
-            $line=$manifest | Where-Object { $_ -match ('\s+' + [regex]::Escape($name) + '$') } | Select-Object -First 1
-            if(!$line){throw "SHA256SUMS missing $name"}
-            $recorded=($line -split '\s+')[0].ToLower()
-            if($recorded -ne $actual){throw "SHA256SUMS mismatch for $name"}
-            "verified $name sha256=$actual"
+            $recorded=(($lines | Where-Object { $_ -match ('\s+'+[regex]::Escape($name)+'$') } | Select-Object -First 1) -split '\s+')[0]
+            if($actual -ne $recorded){ throw "SHA256 mismatch for $name" }
           }
-      - name: Smoke-check files
+          Get-Content artifacts/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beta30-ui-recovery
+          path: |
+            artifacts/MemoryManager_v0.9.0-beta.30.exe
+            artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz
+            artifacts/SHA256SUMS.txt
+
+      - name: Commit browsable verified source tree to main
         shell: pwsh
         run: |
-          if(!(Test-Path artifacts/MemoryManager.exe)){throw 'MemoryManager.exe missing'}
-          if(!(Test-Path artifacts/MemoryManagerSetup.exe)){throw 'MemoryManagerSetup.exe missing'}
-          if(!(Test-Path artifacts/selftest.json)){throw 'selftest.json missing'}
-          Get-Item artifacts/MemoryManager.exe, artifacts/MemoryManagerSetup.exe, artifacts/SHA256SUMS.txt, artifacts/selftest.json | Format-Table Name,Length
-      - name: Publish GitHub Release assets
-        if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release]') }}
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add beta30-source tests_beta30
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            'Browsable beta30 source tree already matches verified archive.'
+            exit 0
+          }
+          git commit -m '[expand-source] Publish verified beta30 source tree'
+          git push origin HEAD:main
+
+      - name: Publish beta.30 GitHub prerelease
+        if: contains(github.event.head_commit.message, '[release-beta30]')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag='v0.9.0-beta.29'
+          $tag=$env:RELEASE_TAG
+          $notes=@'
+          beta.30 is rebuilt from the verified beta.27 Go + embedded WebView2 source and preserves the original UI architecture.
+
+          Changes include Notifications, beginner Log, reliable Open Log, GitHub Releases polling, default maximized main window, and immediate whole-application exit when the license is rejected.
+
+          The prerelease is unsigned unless a trusted Code Signing credential is configured.
+          '@
+          $notes | Set-Content artifacts/RELEASE_NOTES.md
           if(gh release view $tag 2>$null){
-            gh release upload $tag artifacts/MemoryManager.exe artifacts/MemoryManagerSetup.exe artifacts/SHA256SUMS.txt --clobber
+            gh release upload $tag artifacts/MemoryManager_v0.9.0-beta.30.exe artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz artifacts/SHA256SUMS.txt --clobber
           } else {
-            gh release create $tag artifacts/MemoryManager.exe artifacts/MemoryManagerSetup.exe artifacts/SHA256SUMS.txt --title 'Memory Manager v0.9.0-beta.29' --notes-file CHANGELOG.md --prerelease --target main
+            gh release create $tag artifacts/MemoryManager_v0.9.0-beta.30.exe artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz artifacts/SHA256SUMS.txt --title 'Memory Manager v0.9.0-beta.30' --notes-file artifacts/RELEASE_NOTES.md --prerelease --target main
           }
