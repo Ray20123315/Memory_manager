@@ -17,7 +17,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BASE_SOURCE_XZ_SHA256: 86c766cadbddc528f8c475f554cbc8c55e5fa006faec3635c3a730d0d982f1c8
   V1_PATCH_XZ_SHA256: 38527394802673b64ac958650b70b7ee89257567b03bcda9eb5aef82493e2650
   RELEASE_TAG: v1.0.0-beta.1
   EXE_NAME: 記憶體管理器_v1.0.0-beta.1.exe
@@ -37,21 +36,39 @@ jobs:
           go-version: '1.23.2'
           cache: false
 
-      - name: Reconstruct beta.30 canonical baseline
+      - name: Download and verify beta.30 canonical baseline release
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $parts = Get-ChildItem '_source_b64/part*.txt' | Sort-Object Name
-          if ($parts.Count -lt 1) { throw 'No beta.30 canonical source transport parts found' }
-          $builder = [System.Text.StringBuilder]::new()
-          foreach ($p in $parts) { [void]$builder.Append((Get-Content $p.FullName -Raw).Trim()) }
-          [IO.File]::WriteAllBytes('beta30-source.tar.xz',[Convert]::FromBase64String($builder.ToString()))
-          $actual=(Get-FileHash 'beta30-source.tar.xz' -Algorithm SHA256).Hash.ToLower()
-          if($actual -ne $env:BASE_SOURCE_XZ_SHA256){ throw "beta30 baseline SHA256 mismatch: $actual != $env:BASE_SOURCE_XZ_SHA256" }
-          tar -xJf beta30-source.tar.xz
+          $baselineTag='v0.9.0-beta.30'
+          $baselineName='MemoryManager_v0.9.0-beta.30-source.tar.gz'
+          New-Item -ItemType Directory -Force baseline30 | Out-Null
+          gh release download $baselineTag --pattern $baselineName --pattern 'SHA256SUMS.txt' --dir baseline30 --clobber
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (!(Test-Path beta30-source/go.mod)) { throw 'beta30-source/go.mod missing after baseline extraction' }
-          if (!(Test-Path tests_beta30/gate_beta30.py)) { throw 'tests_beta30/gate_beta30.py missing after baseline extraction' }
+          $baseline=Join-Path baseline30 $baselineName
+          $manifest=Join-Path baseline30 'SHA256SUMS.txt'
+          if (!(Test-Path $baseline)) { throw "beta.30 baseline source asset missing: $baselineName" }
+          if (!(Test-Path $manifest)) { throw 'beta.30 SHA256SUMS.txt missing' }
+          $actual=(Get-FileHash $baseline -Algorithm SHA256).Hash.ToLower()
+          $recordedLine=Get-Content $manifest | Where-Object { $_ -match ('\s+'+[regex]::Escape($baselineName)+'$') } | Select-Object -First 1
+          if(-not $recordedLine){ throw "beta.30 SHA256SUMS has no entry for $baselineName" }
+          $recorded=($recordedLine -split '\s+')[0].ToLower()
+          if($actual -ne $recorded){ throw "beta.30 baseline manifest mismatch: $actual != $recorded" }
+          $releaseJson=gh api "repos/${{ github.repository }}/releases/tags/$baselineTag" | ConvertFrom-Json
+          if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE }
+          $asset=$releaseJson.assets | Where-Object name -eq $baselineName | Select-Object -First 1
+          if(-not $asset){ throw "beta.30 release metadata missing asset $baselineName" }
+          if($asset.digest){
+            $server=($asset.digest -replace '^sha256:','').ToLower()
+            if($server -ne $actual){ throw "beta.30 GitHub asset digest mismatch: $server != $actual" }
+          }
+          tar -xzf $baseline
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path beta30-source/go.mod)) { throw 'beta30-source/go.mod missing after release extraction' }
+          if (!(Test-Path tests_beta30/gate_beta30.py)) { throw 'tests_beta30/gate_beta30.py missing after release extraction' }
           Copy-Item beta30-source v1-source -Recurse -Force
+          "beta30_baseline_sha256=$actual"
 
       - name: Apply exact v1 feature patch
         shell: pwsh
