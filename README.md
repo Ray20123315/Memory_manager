@@ -40,13 +40,13 @@ Windows 11 記憶體監控、事故分析與安全調整工具。`v0.9.0-beta.29
 
 ## 安裝
 
-到 **GitHub Releases** 下載：
+`v0.9.0-beta.29` 已正式發布為 GitHub prerelease；請以 Release 頁上的正式資產為準：
 
 - `MemoryManagerSetup.exe`：建議使用，真正安裝／修復／解除安裝。
 - `MemoryManager.exe`：免安裝版。
 - `SHA256SUMS.txt`：檔案完整性驗證。
 
-> `v0.9.0-beta.29` 目前仍是 prerelease。若 Release 頁尚未出現 beta.29，代表 final release workflow 尚未通過；不要使用開發中的 CI 產物冒充正式 prerelease。
+不要使用未經 final release workflow 驗證的開發中 CI 產物冒充正式 prerelease。
 
 ## 安全原則
 
