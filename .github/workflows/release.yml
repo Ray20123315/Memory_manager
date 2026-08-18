@@ -22,22 +22,36 @@ jobs:
     env:
       SOURCE_DIR: beta30-source
       RELEASE_TAG: v0.9.0-beta.30
+      SOURCE_XZ_SHA256: 86c766cadbddc528f8c475f554cbc8c55e5fa006faec3635c3a730d0d982f1c8
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
 
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.2'
+          cache: false
 
-      - name: Reconstruct exact beta.30 source archive
+      - name: Prepare exact beta.30 source tree
         shell: pwsh
         run: |
-          python _source_parts/reconstruct_beta30_source.py
-          tar -xzf beta30-source-only.tar.gz
-          if (!(Test-Path beta30-source/go.mod)) { throw 'beta30-source/go.mod missing after extraction' }
-          if (!(Test-Path tests_beta30/gate_beta30.py)) { throw 'tests_beta30/gate_beta30.py missing after extraction' }
+          if (Test-Path beta30-source/go.mod) {
+            'Browsable beta30 source tree already present; transport reconstruction skipped.'
+          } else {
+            $parts = Get-ChildItem '_source_b64/part*.txt' | Sort-Object Name
+            if ($parts.Count -lt 1) { throw 'No beta30 source transport parts found' }
+            $builder = [System.Text.StringBuilder]::new()
+            foreach ($p in $parts) { [void]$builder.Append((Get-Content $p.FullName -Raw).Trim()) }
+            [IO.File]::WriteAllBytes('beta30-source.tar.xz',[Convert]::FromBase64String($builder.ToString()))
+            $actual=(Get-FileHash 'beta30-source.tar.xz' -Algorithm SHA256).Hash.ToLower()
+            if($actual -ne $env:SOURCE_XZ_SHA256){ throw "source XZ SHA256 mismatch: $actual != $env:SOURCE_XZ_SHA256" }
+            tar -xJf beta30-source.tar.xz
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if (!(Test-Path beta30-source/go.mod)) { throw 'beta30-source/go.mod missing' }
+          if (!(Test-Path tests_beta30/gate_beta30.py)) { throw 'tests_beta30/gate_beta30.py missing' }
 
       - name: Source preservation gate
         shell: pwsh
@@ -70,23 +84,24 @@ jobs:
           go build -trimpath -ldflags='-s -w -H=windowsgui' -o ../artifacts/base_B.exe .
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Pop-Location
-          $a=(Get-FileHash artifacts/base_A.exe -Algorithm SHA256).Hash
-          $b=(Get-FileHash artifacts/base_B.exe -Algorithm SHA256).Hash
+          $a=(Get-FileHash artifacts/base_A.exe -Algorithm SHA256).Hash.ToLower()
+          $b=(Get-FileHash artifacts/base_B.exe -Algorithm SHA256).Hash.ToLower()
           if($a -ne $b){ throw "base builds differ: $a != $b" }
           python tests_beta30/pe_resource_tool.py inject artifacts/base_A.exe beta30-source/assets/beta27_resource_donor.pe artifacts/final_A.exe
           python tests_beta30/pe_resource_tool.py inject artifacts/base_B.exe beta30-source/assets/beta27_resource_donor.pe artifacts/final_B.exe
-          $fa=(Get-FileHash artifacts/final_A.exe -Algorithm SHA256).Hash
-          $fb=(Get-FileHash artifacts/final_B.exe -Algorithm SHA256).Hash
+          $fa=(Get-FileHash artifacts/final_A.exe -Algorithm SHA256).Hash.ToLower()
+          $fb=(Get-FileHash artifacts/final_B.exe -Algorithm SHA256).Hash.ToLower()
           if($fa -ne $fb){ throw "resource builds differ: $fa != $fb" }
           python tests_beta30/pe_resource_tool.py verify artifacts/final_A.exe --donor beta30-source/assets/beta27_resource_donor.pe --manifest beta30-source/assets/app.manifest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item artifacts/final_A.exe artifacts/MemoryManager_v0.9.0-beta.30.exe -Force
-          "final_sha256=$($fa.ToLower())"
+          "final_sha256=$fa"
 
-      - name: Package source and verify SHA256SUMS
+      - name: Package verified source and SHA256SUMS
         shell: pwsh
         run: |
-          Copy-Item beta30-source-only.tar.gz artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz -Force
+          tar -czf artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz beta30-source tests_beta30
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $items=@('artifacts/MemoryManager_v0.9.0-beta.30.exe','artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz')
           $lines=foreach($f in $items){ $h=(Get-FileHash $f -Algorithm SHA256).Hash.ToLower(); "$h  $([IO.Path]::GetFileName($f))" }
           $lines | Set-Content artifacts/SHA256SUMS.txt
@@ -106,20 +121,17 @@ jobs:
             artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz
             artifacts/SHA256SUMS.txt
 
-      - name: Commit browsable verified source tree to main
-        if: github.event_name == 'push' && !contains(github.event.head_commit.message, '[release-beta30]')
+      - name: Commit browsable verified source to PR branch
+        if: github.event_name == 'pull_request'
         shell: pwsh
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add beta30-source tests_beta30
           git diff --cached --quiet
-          if ($LASTEXITCODE -eq 0) {
-            'Browsable beta30 source tree already matches verified archive.'
-            exit 0
-          }
+          if ($LASTEXITCODE -eq 0) { 'Browsable source already present.'; exit 0 }
           git commit -m '[expand-source] Publish verified beta30 source tree'
-          git push origin HEAD:main
+          git push origin "HEAD:${{ github.head_ref }}"
 
       - name: Publish beta.30 GitHub prerelease
         if: github.event_name == 'push' && contains(github.event.head_commit.message, '[release-beta30]')
