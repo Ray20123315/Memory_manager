@@ -12,11 +12,11 @@ permissions:
 
 concurrency:
   group: beta30-go-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   windows-gate:
-    runs-on: windows-2025
+    runs-on: windows-latest
     env:
       SOURCE_DIR: beta30-source
       RELEASE_TAG: v0.9.0-beta.30
