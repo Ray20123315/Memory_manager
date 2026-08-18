@@ -104,8 +104,8 @@ jobs:
             artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz
             artifacts/SHA256SUMS.txt
 
-      - name: Commit browsable verified source tree to staging branch
-        if: github.ref == 'refs/heads/beta30-ui-recovery'
+      - name: Commit browsable verified source tree after Windows gate
+        if: github.ref == 'refs/heads/beta30-ui-recovery' || github.ref == 'refs/heads/main'
         shell: pwsh
         run: |
           git config user.name 'github-actions[bot]'
@@ -117,7 +117,8 @@ jobs:
             exit 0
           }
           git commit -m '[expand-source] Publish verified beta30 source tree'
-          git push origin HEAD:beta30-ui-recovery
+          $branch='${{ github.ref_name }}'
+          git push origin "HEAD:$branch"
 
       - name: Publish beta.30 GitHub prerelease
         if: github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-beta30]')
