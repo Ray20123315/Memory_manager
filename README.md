@@ -1,70 +1,55 @@
 # Memory Manager / 記憶體管理器
 
-Windows 11 記憶體監控、事故分析與安全調整工具。`v0.9.0-beta.29` 以「先觀測、可回復、不亂殺程式」為核心；不把記憶體最佳化包裝成一鍵清 RAM。
+`v0.9.0-beta.30` 以使用者提供並驗證過的 **beta.27 Go + embedded WebView2 原始碼**重作。beta.27 的介面架構、動畫、三語、Theme / Accent、懸浮球、Game Memory Reserve、事故工具與原本操作邏輯是 beta.30 的 UI Canonical；先前 beta.29 的 WPF 重建介面不是 beta.30 的 UI 基準。
 
-## beta.29 已驗證功能
+## beta.30 這次修正
 
-### 記憶體觀測
-- 1 ms 起的 Telemetry（要求取樣間隔），與 UI refresh 完全分離。
-- RAM、Commit、Commit Headroom、Commit ETA、Page File 狀態。
-- Process Working Set、Private Memory、真正 Process Commit Charge、Commit Δ。
-- 持續成長型 Leak indicator，不把單次尖峰直接判成 leak。
-- Adaptive Refresh：前景／背景／遊戲情境自動調整畫面更新負擔。
+- Welcome / 授權頁按下 **「不同意」會立即退出整個程式**：不等待 Theme / Accent 儲存、不進主畫面、不縮到 Tray；backend 進入完整退出流程並 `PostQuitMessage`。
+- 新增通知頁面，但沿用原 WebView2 UI 視覺與導航架構。
+- 新增 Log（簡單易懂版），並修正「開啟 Log」以開啟實際 Log 目錄。
+- 更新檢查使用 GitHub Releases polling；支援 Beta / Stable 邏輯，不把 polling 誤稱為 true push。
+- 主視窗預設最大化，同時保留原本全螢幕／縮放與 Theme / Accent 行為。
+- 保留原版 Game Memory Reserve、Floating Ball、Flight Recorder、Incident / Crash 診斷與安裝／解除安裝流程。
 
-### 救援與事故分析
-- Emergency Rescue 與 Safe Close Advisor；不自動亂殺系統程式。
-- Flight Recorder V2：記憶體內約 250 ms frame、磁碟約 1 秒持久化，並限制 journal 大小。
-- Windows Event Log Incident Timeline。
-- Previous Crash Analyzer：結合 heartbeat、Event 2004、41/6008、BugCheck、WHEA 等證據，不把 Event 41 單獨當作根因。
-- Reliability History 與 incident-only Support Bundle。
+## 原始碼
 
-### 遊戲 / Per-App Memory Rules
-- Game Memory Reserve V2 採 **可回復的 Windows Process Memory Priority**，不是硬鎖 RAM。
-- Game Profile 可由常見遊戲安裝路徑自動偵測，也可手動加入目前前景程式。
-- Per-App Memory Rule 預設總開關關閉；只有使用者建立規則並啟用後才可能套用。
-- 前景、遊戲、反作弊、語音、輸入、安全與 Windows 核心程序有硬保護條件。
-- 規則不再符合、程式變前景、停用規則或 Memory Manager 結束時，要求還原原本 Memory Priority。
+正式 beta.30 原始碼由本 repository 的 Windows Gate 所驗證。驗證流程使用 `_source_parts/` 重建 exact source archive，SHA-256 必須符合固定值後才進入測試；通過後會把 `beta30-source/` 與 `tests_beta30/` 展開回 `main`，方便直接瀏覽。
 
-### Update / OEM / 通知
-- Notification Center 與 Windows 本機通知；背景更新是 GitHub Releases polling，不假裝成 true push。
-- Built-in Update Center 支援 Beta / Stable channel、Release Notes、asset 大小與 GitHub 提供的 SHA-256 digest。
-- 設定 Backup / Rollback；還原前會自動建立唯一命名的 safety backup。
-- OEM Control Center V2：讀取 BIOS 廠牌／機型並偵測、開啟 MSI Center；沒有安全公開 API 時不直接寫 EC、風扇曲線、功耗或私有 register。
-- Beginner Log 與「開啟 Log 資料夾」直接打開實際資料目錄。
+beta.30 source archive SHA-256：
 
-### Installer V2 / Productization
-- `MemoryManagerSetup.exe` 是真正 self-contained Windows 安裝器。
-- 支援 Install / Repair / Uninstall，寫入 Start Menu 與 HKCU Installed Apps 資訊。
-- CI 會在隔離目錄實際執行 quiet install → repair → uninstall，並用 SHA-256 驗證安裝與修復後 payload 與 build 產物一致。
-- 預設最大化、深色／淺色介面、About / Credits / Links。
+`ffa22411e12572820c67457c478344f0219df9f84a1d1f2a3bfd63e6c91d2df9`
 
-## 安裝
+## Windows 驗證 Gate
 
-`v0.9.0-beta.29` 已正式發布為 GitHub prerelease；請以 Release 頁上的正式資產為準：
+`.github/workflows/beta30-go.yml` 在 Windows runner 上執行：
 
-- `MemoryManagerSetup.exe`：建議使用，真正安裝／修復／解除安裝。
-- `MemoryManager.exe`：免安裝版。
-- `SHA256SUMS.txt`：檔案完整性驗證。
+1. 重建並驗證 exact beta.30 source archive SHA-256。
+2. Source / UI preservation regression gate。
+3. `go test -count=1 ./...`，其中包含真正的 per-user install lifecycle 測試：暫時 LocalAppData、複製 EXE、寫 HKCU Installed Apps / Startup Run、核對內容，再解除安裝與清理。
+4. `go vet -unsafeptr=false ./...`。
+5. 連續兩次 deterministic Windows GUI build。
+6. 恢復並驗證 beta.27 的 icon / manifest PE resource payload。
+7. 重新計算並驗證 `SHA256SUMS.txt`。
+8. 只有上述步驟全部成功後，帶 `[release-beta30]` 的 main commit 才能發布 prerelease assets。
 
-不要使用未經 final release workflow 驗證的開發中 CI 產物冒充正式 prerelease。
+## GitHub Release
 
-## 安全原則
+`v0.9.0-beta.30` Release 預定包含：
 
-- 不宣稱「清空 RAM」會讓電腦神奇變快。
-- Process Memory Priority 是 Windows Memory Manager 的修剪優先提示，不是保證保留 RAM。
-- 不寫未公開 MSI EC/MSR。
-- Event 41 / 6008 只代表異常關機／重新啟動序列，不單獨宣稱電源、RAM 或特定程式就是根因。
-- 無正式受信任 Code Signing 憑證時，Release 會如實保持 unsigned；不假裝自簽能繞過 SmartScreen / Smart App Control。
+- `MemoryManager_v0.9.0-beta.30.exe`
+- `MemoryManager_v0.9.0-beta.30-source.tar.gz`
+- `SHA256SUMS.txt`
 
-## 開發與驗證
+Release binary 在沒有正式受信任 Code Signing credential 時會保持 **unsigned**；不宣稱能繞過 SmartScreen / Smart App Control。
 
-```powershell
-dotnet build src/MemoryManager/MemoryManager.csproj -c Release
-dotnet publish src/MemoryManager/MemoryManager.csproj -c Release -r win-x64 --self-contained true
-```
+## 安全／介面原則
 
-GitHub Actions 的 Windows Gate 會執行 `MemoryManager.exe --self-test`、真正 installer build，以及 Installer V2 的 install / repair / uninstall audit。
+- 不再以其他 UI framework 重畫 beta.27 的介面。
+- 新功能必須嵌進既有 WebView2 HTML / CSS / JS 視覺與互動架構。
+- 不同意授權時必須退出整個 App。
+- 不把「清 RAM」包裝成保證提升效能的魔法按鈕。
+- 不直接寫未公開 OEM EC / 私有 register。
 
 ## 網站
 
-產品網站原始碼維護於 `Ray20123315/html`，公開網站由 GitHub Pages 部署。
+產品網站原始碼維護於 `Ray20123315/html`。beta.30 網站下載入口會在 beta.30 Release 驗證完成後再對齊，避免先連到不存在或未驗證的 asset。
