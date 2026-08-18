@@ -5,13 +5,15 @@ on:
     branches: [ main ]
     paths-ignore:
       - '.Ray_Chen/**'
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: beta30-release
+  group: beta30-release-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -105,6 +107,7 @@ jobs:
             artifacts/SHA256SUMS.txt
 
       - name: Commit browsable verified source tree to main
+        if: github.event_name == 'push' && !contains(github.event.head_commit.message, '[release-beta30]')
         shell: pwsh
         run: |
           git config user.name 'github-actions[bot]'
@@ -119,7 +122,7 @@ jobs:
           git push origin HEAD:main
 
       - name: Publish beta.30 GitHub prerelease
-        if: contains(github.event.head_commit.message, '[release-beta30]')
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[release-beta30]')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
