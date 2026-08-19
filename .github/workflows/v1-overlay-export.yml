@@ -3,6 +3,8 @@ name: Export v1 beta1 overlay artifact
 on:
   push:
     branches: [ v1-beta1-verification2 ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
