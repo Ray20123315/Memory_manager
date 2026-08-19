@@ -1,0 +1,29 @@
+name: Export v1 beta1 overlay artifact
+
+on:
+  push:
+    branches: [ v1-beta1-verification2 ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export-overlay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct and verify overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          count=$(find _v1_overlay_xz -maxdepth 1 -type f -name 'part*.txt' | wc -l)
+          test "$count" -eq 13
+          cat _v1_overlay_xz/part*.txt | tr -d '\r\n' | base64 -d > v1_overlay.tar.xz
+          echo 'd13473b717c91c92e3207dbb287d4ccba46553383766d344f2b57b2c4b57da5e  v1_overlay.tar.xz' | sha256sum -c -
+          tar -tJf v1_overlay.tar.xz >/dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v1-beta1-overlay-recovery
+          path: v1_overlay.tar.xz
+          if-no-files-found: error
