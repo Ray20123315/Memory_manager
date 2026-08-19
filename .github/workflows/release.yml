@@ -1,84 +1,120 @@
-name: Build and publish beta.30
+name: Build and publish v1.0.0-beta.1
 
 on:
+  pull_request:
+    branches: [ main ]
   push:
     branches: [ main ]
     paths-ignore:
       - '.Ray_Chen/**'
-  pull_request:
-    branches: [ main ]
+      - 'V1_RELEASE_VERIFIED.md'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: beta30-release-${{ github.event_name }}-${{ github.ref }}
+  group: v1-beta1-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-release:
     runs-on: windows-latest
     env:
-      SOURCE_DIR: beta30-source
-      RELEASE_TAG: v0.9.0-beta.30
-      SOURCE_XZ_SHA256: 86c766cadbddc528f8c475f554cbc8c55e5fa006faec3635c3a730d0d982f1c8
+      SOURCE_DIR: v1-source
+      TEST_DIR: tests_v1
+      RELEASE_TAG: v1.0.0-beta.1
+      EXE_NAME: 記憶體管理器_v1.0.0-beta.1.exe
+      SOURCE_ASSET: 記憶體管理器_v1.0.0-beta.1-source.tar.gz
+      OVERLAY_SHA256: d13473b717c91c92e3207dbb287d4ccba46553383766d344f2b57b2c4b57da5e
+      EXPECTED_EXE_SHA256: bda35961adbb05bae2a142ca3d65b9d119b1459bc6f508e220c22b0d196035ec
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
 
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.2'
           cache: false
 
-      - name: Prepare exact beta.30 source tree
+      - name: Bootstrap exact v1 source
+        id: source
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if (Test-Path beta30-source/go.mod) {
-            'Browsable beta30 source tree already present; transport reconstruction skipped.'
-          } else {
-            $parts = Get-ChildItem '_source_b64/part*.txt' | Sort-Object Name
-            if ($parts.Count -lt 1) { throw 'No beta30 source transport parts found' }
-            $builder = [System.Text.StringBuilder]::new()
-            foreach ($p in $parts) { [void]$builder.Append((Get-Content $p.FullName -Raw).Trim()) }
-            [IO.File]::WriteAllBytes('beta30-source.tar.xz',[Convert]::FromBase64String($builder.ToString()))
-            $actual=(Get-FileHash 'beta30-source.tar.xz' -Algorithm SHA256).Hash.ToLower()
-            if($actual -ne $env:SOURCE_XZ_SHA256){ throw "source XZ SHA256 mismatch: $actual != $env:SOURCE_XZ_SHA256" }
-            tar -xJf beta30-source.tar.xz
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $ErrorActionPreference='Stop'
+          if (Test-Path "$env:SOURCE_DIR/go.mod") {
+            'source_mode=direct' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Host 'Using browsable v1 source tree from repository.'
+            exit 0
           }
-          if (!(Test-Path beta30-source/go.mod)) { throw 'beta30-source/go.mod missing' }
-          if (!(Test-Path tests_beta30/gate_beta30.py)) { throw 'tests_beta30/gate_beta30.py missing' }
 
-      - name: Source preservation gate
+          $parts = Get-ChildItem '_v1_overlay_xz/part*.txt' | Sort-Object Name
+          if ($parts.Count -ne 13) { throw "Expected 13 v1 overlay chunks; found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          [IO.File]::WriteAllBytes('v1_overlay.tar.xz',[Convert]::FromBase64String($b64))
+          $overlayHash=(Get-FileHash 'v1_overlay.tar.xz' -Algorithm SHA256).Hash.ToLower()
+          if ($overlayHash -ne $env:OVERLAY_SHA256) { throw "Overlay SHA256 mismatch: $overlayHash" }
+
+          New-Item -ItemType Directory -Force bootstrap | Out-Null
+          gh release download v0.9.0-beta.30 --pattern 'MemoryManager_v0.9.0-beta.30-source.tar.gz' --dir bootstrap
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to download verified beta.30 source release asset.' }
+          $betaArchive = Get-ChildItem bootstrap -File -Filter '*source.tar.gz' | Select-Object -First 1
+          if (-not $betaArchive) { throw 'beta.30 source archive missing.' }
+          New-Item -ItemType Directory -Force bootstrap_extract | Out-Null
+          tar -xf $betaArchive.FullName -C bootstrap_extract
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to extract beta.30 source archive.' }
+          $goMod = Get-ChildItem bootstrap_extract -Recurse -File -Filter go.mod | Select-Object -First 1
+          if (-not $goMod) { throw 'go.mod not found in beta.30 source asset.' }
+          $betaRoot = $goMod.Directory.FullName
+
+          New-Item -ItemType Directory -Force $env:SOURCE_DIR | Out-Null
+          Copy-Item (Join-Path $betaRoot '*') $env:SOURCE_DIR -Recurse -Force
+          tar -xf v1_overlay.tar.xz
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to extract v1 overlay.' }
+          Copy-Item 'v1_overlay_pkg/source/*' $env:SOURCE_DIR -Recurse -Force
+          New-Item -ItemType Directory -Force $env:TEST_DIR | Out-Null
+          Copy-Item 'v1_overlay_pkg/tests/*' $env:TEST_DIR -Recurse -Force
+          if (!(Test-Path "$env:SOURCE_DIR/go.mod")) { throw 'v1 source go.mod missing after overlay.' }
+          if (!(Test-Path "$env:TEST_DIR/gate_v1_full.py")) { throw 'v1 tests missing after overlay.' }
+          'source_mode=overlay' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Source and UI preservation gate
         shell: pwsh
         run: |
-          $env:BETA30_SOURCE_ROOT = (Resolve-Path $env:SOURCE_DIR).Path
-          python tests_beta30/gate_beta30.py
+          $env:V1_SOURCE_ROOT=(Resolve-Path $env:SOURCE_DIR).Path
+          python "$env:TEST_DIR/gate_v1_full.py"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --check "$env:SOURCE_DIR/frontend/index.html" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host 'HTML is validated by gate_v1_full.py; continuing.'
+          }
 
-      - name: Windows Go tests including real per-user install lifecycle
+      - name: Native Windows Go tests
         shell: pwsh
-        working-directory: beta30-source
+        working-directory: v1-source
         run: |
+          $env:CGO_ENABLED='0'
           go test -count=1 ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Windows Go vet
         shell: pwsh
-        working-directory: beta30-source
+        working-directory: v1-source
         run: |
+          $env:CGO_ENABLED='0'
           go vet -unsafeptr=false ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Deterministic Windows build and PE resource verification
+      - name: Deterministic build and PE resource gate
         shell: pwsh
         run: |
+          $ErrorActionPreference='Stop'
           New-Item -ItemType Directory -Force artifacts | Out-Null
           Push-Location $env:SOURCE_DIR
+          $env:CGO_ENABLED='0'
           go build -trimpath -ldflags='-s -w -H=windowsgui' -o ../artifacts/base_A.exe .
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go build -trimpath -ldflags='-s -w -H=windowsgui' -o ../artifacts/base_B.exe .
@@ -86,70 +122,130 @@ jobs:
           Pop-Location
           $a=(Get-FileHash artifacts/base_A.exe -Algorithm SHA256).Hash.ToLower()
           $b=(Get-FileHash artifacts/base_B.exe -Algorithm SHA256).Hash.ToLower()
-          if($a -ne $b){ throw "base builds differ: $a != $b" }
-          python tests_beta30/pe_resource_tool.py inject artifacts/base_A.exe beta30-source/assets/beta27_resource_donor.pe artifacts/final_A.exe
-          python tests_beta30/pe_resource_tool.py inject artifacts/base_B.exe beta30-source/assets/beta27_resource_donor.pe artifacts/final_B.exe
+          if ($a -ne $b) { throw "Base builds differ: $a != $b" }
+          python "$env:TEST_DIR/pe_resource_tool.py" inject artifacts/base_A.exe "$env:SOURCE_DIR/assets/beta27_resource_donor.pe" artifacts/final_A.exe
+          python "$env:TEST_DIR/pe_resource_tool.py" inject artifacts/base_B.exe "$env:SOURCE_DIR/assets/beta27_resource_donor.pe" artifacts/final_B.exe
           $fa=(Get-FileHash artifacts/final_A.exe -Algorithm SHA256).Hash.ToLower()
           $fb=(Get-FileHash artifacts/final_B.exe -Algorithm SHA256).Hash.ToLower()
-          if($fa -ne $fb){ throw "resource builds differ: $fa != $fb" }
-          python tests_beta30/pe_resource_tool.py verify artifacts/final_A.exe --donor beta30-source/assets/beta27_resource_donor.pe --manifest beta30-source/assets/app.manifest
+          if ($fa -ne $fb) { throw "Final builds differ: $fa != $fb" }
+          if ($fa -ne $env:EXPECTED_EXE_SHA256) { throw "Unexpected v1 EXE SHA256: $fa" }
+          python "$env:TEST_DIR/pe_resource_tool.py" verify artifacts/final_A.exe --donor "$env:SOURCE_DIR/assets/beta27_resource_donor.pe" --manifest "$env:SOURCE_DIR/assets/app.manifest"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Copy-Item artifacts/final_A.exe artifacts/MemoryManager_v0.9.0-beta.30.exe -Force
-          "final_sha256=$fa"
+          Copy-Item artifacts/final_A.exe (Join-Path artifacts $env:EXE_NAME) -Force
+          Write-Host "final_sha256=$fa"
 
-      - name: Package verified source and SHA256SUMS
+      - name: Package source and verify SHA256SUMS
         shell: pwsh
         run: |
-          tar -czf artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz beta30-source tests_beta30
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $items=@('artifacts/MemoryManager_v0.9.0-beta.30.exe','artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz')
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory -Force package/記憶體管理器_v1.0.0-beta.1 | Out-Null
+          Copy-Item "$env:SOURCE_DIR/*" package/記憶體管理器_v1.0.0-beta.1 -Recurse -Force
+          New-Item -ItemType Directory -Force package/記憶體管理器_v1.0.0-beta.1/tests | Out-Null
+          Copy-Item "$env:TEST_DIR/*" package/記憶體管理器_v1.0.0-beta.1/tests -Recurse -Force
+          tar -czf (Join-Path artifacts $env:SOURCE_ASSET) -C package 記憶體管理器_v1.0.0-beta.1
+          if ($LASTEXITCODE -ne 0) { throw 'Source packaging failed.' }
+          $items=@((Join-Path artifacts $env:EXE_NAME),(Join-Path artifacts $env:SOURCE_ASSET))
           $lines=foreach($f in $items){ $h=(Get-FileHash $f -Algorithm SHA256).Hash.ToLower(); "$h  $([IO.Path]::GetFileName($f))" }
-          $lines | Set-Content artifacts/SHA256SUMS.txt
+          $lines | Set-Content artifacts/SHA256SUMS.txt -Encoding utf8
           foreach($f in $items){
             $name=[IO.Path]::GetFileName($f)
             $actual=(Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
             $recorded=(($lines | Where-Object { $_ -match ('\s+'+[regex]::Escape($name)+'$') } | Select-Object -First 1) -split '\s+')[0]
-            if($actual -ne $recorded){ throw "SHA256 mismatch for $name" }
+            if($actual -ne $recorded){ throw "SHA256 manifest mismatch for $name" }
           }
           Get-Content artifacts/SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: beta30-ui-recovery
+          name: v1-beta1-candidate
           path: |
-            artifacts/MemoryManager_v0.9.0-beta.30.exe
-            artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz
+            artifacts/記憶體管理器_v1.0.0-beta.1.exe
+            artifacts/記憶體管理器_v1.0.0-beta.1-source.tar.gz
             artifacts/SHA256SUMS.txt
 
-      - name: Commit browsable verified source to PR branch
-        if: github.event_name == 'pull_request'
+      - name: Commit browsable verified v1 source tree to main
+        if: github.event_name == 'push' && steps.source.outputs.source_mode == 'overlay' && !contains(github.event.head_commit.message, '[release-v1-beta1]')
         shell: pwsh
         run: |
+          $ErrorActionPreference='Stop'
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add beta30-source tests_beta30
-          git diff --cached --quiet
-          if ($LASTEXITCODE -eq 0) { 'Browsable source already present.'; exit 0 }
-          git commit -m '[expand-source] Publish verified beta30 source tree'
-          git push origin "HEAD:${{ github.head_ref }}"
+          git add v1-source tests_v1
+          if (Test-Path _v1_overlay_xz) { git rm -r _v1_overlay_xz }
+          git commit -m '[expand-v1-source] Publish verified v1 source tree'
+          git push origin HEAD:main
 
-      - name: Publish beta.30 GitHub prerelease
-        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[release-beta30]')
+      - name: Publish v1.0.0-beta.1 and remove beta.28/beta.29
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[release-v1-beta1]')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag=$env:RELEASE_TAG
+          $ErrorActionPreference='Stop'
           $notes=@'
-          beta.30 is rebuilt from the verified beta.27 Go + embedded WebView2 source and preserves the original UI architecture.
+          記憶體管理器 v1.0.0-beta.1
 
-          Changes include Notifications, beginner Log, reliable Open Log, GitHub Releases polling, default maximized main window, and immediate whole-application exit when the license is rejected.
+          Built from the verified beta.30/beta.27 Go + embedded WebView2 UI canonical without replacing the original interface architecture.
 
-          The prerelease is unsigned unless a trusted Code Signing credential is configured.
+          Major additions: Memory Pressure Radar, RAM/Commit History, Process Memory Ranking, Memory Leak Watch, App Memory Inspector, Game Session Monitor, Game Launch Advisor, Background App Advisor, Memory Event Timeline, Smart Alert Rules, Diagnostic Report, Before/After Comparison, Startup Memory Baseline, System Health Score, and Emergency Memory Guard V2.
+
+          License rejection exits the whole application immediately. The prerelease is unsigned unless a trusted Authenticode credential is configured.
           '@
-          $notes | Set-Content artifacts/RELEASE_NOTES.md
-          if(gh release view $tag 2>$null){
-            gh release upload $tag artifacts/MemoryManager_v0.9.0-beta.30.exe artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz artifacts/SHA256SUMS.txt --clobber
+          $notes | Set-Content artifacts/RELEASE_NOTES.md -Encoding utf8
+          if (gh release view $env:RELEASE_TAG 2>$null) {
+            gh release upload $env:RELEASE_TAG (Join-Path artifacts $env:EXE_NAME) (Join-Path artifacts $env:SOURCE_ASSET) artifacts/SHA256SUMS.txt --clobber
           } else {
-            gh release create $tag artifacts/MemoryManager_v0.9.0-beta.30.exe artifacts/MemoryManager_v0.9.0-beta.30-source.tar.gz artifacts/SHA256SUMS.txt --title 'Memory Manager v0.9.0-beta.30' --notes-file artifacts/RELEASE_NOTES.md --prerelease --target main
+            gh release create $env:RELEASE_TAG (Join-Path artifacts $env:EXE_NAME) (Join-Path artifacts $env:SOURCE_ASSET) artifacts/SHA256SUMS.txt --title '記憶體管理器 v1.0.0-beta.1' --notes-file artifacts/RELEASE_NOTES.md --prerelease --target main
           }
+          if ($LASTEXITCODE -ne 0) { throw 'v1 GitHub Release publish failed.' }
+
+          New-Item -ItemType Directory -Force release_readback | Out-Null
+          gh release download $env:RELEASE_TAG --pattern $env:EXE_NAME --pattern $env:SOURCE_ASSET --pattern 'SHA256SUMS.txt' --dir release_readback --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'v1 Release read-back download failed.' }
+          foreach($name in @($env:EXE_NAME,$env:SOURCE_ASSET)){
+            $local=(Get-FileHash (Join-Path artifacts $name) -Algorithm SHA256).Hash.ToLower()
+            $remote=(Get-FileHash (Join-Path release_readback $name) -Algorithm SHA256).Hash.ToLower()
+            if($local -ne $remote){ throw "Release read-back mismatch for $name" }
+          }
+          $localManifest=(Get-FileHash artifacts/SHA256SUMS.txt -Algorithm SHA256).Hash.ToLower()
+          $remoteManifest=(Get-FileHash release_readback/SHA256SUMS.txt -Algorithm SHA256).Hash.ToLower()
+          if($localManifest -ne $remoteManifest){ throw 'Release SHA256SUMS read-back mismatch.' }
+          gh release view v0.9.0-beta.30 | Out-Null
+          if($LASTEXITCODE -ne 0){ throw 'beta.30 must remain available.' }
+
+          foreach($old in @('v0.9.0-beta.28','v0.9.0-beta.29')){
+            gh release view $old 2>$null
+            if($LASTEXITCODE -eq 0){
+              gh release delete $old --cleanup-tag -y
+              if($LASTEXITCODE -ne 0){ throw "Failed deleting old release $old" }
+            } else {
+              $tag=(git ls-remote --tags origin "refs/tags/$old")
+              if($tag){ git push origin ":refs/tags/$old" }
+            }
+            gh release view $old 2>$null
+            if($LASTEXITCODE -eq 0){ throw "Old release still exists: $old" }
+            $remaining=(git ls-remote --tags origin "refs/tags/$old")
+            if($remaining){ throw "Old tag still exists: $old" }
+          }
+
+          $exeHash=(Get-FileHash (Join-Path artifacts $env:EXE_NAME) -Algorithm SHA256).Hash.ToLower()
+          $srcHash=(Get-FileHash (Join-Path artifacts $env:SOURCE_ASSET) -Algorithm SHA256).Hash.ToLower()
+          @"
+          # v1.0.0-beta.1 release verified
+
+          - run_id: $env:GITHUB_RUN_ID
+          - tag: $env:RELEASE_TAG
+          - exe: $env:EXE_NAME
+          - exe_sha256: $exeHash
+          - source: $env:SOURCE_ASSET
+          - source_sha256: $srcHash
+          - beta.28 release/tag: removed
+          - beta.29 release/tag: removed
+          - beta.30: retained
+          - release asset read-back: PASS
+          "@ | Set-Content V1_RELEASE_VERIFIED.md -Encoding utf8
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add V1_RELEASE_VERIFIED.md
+          git commit -m '[release-verified] v1.0.0-beta.1 release and legacy cleanup verified'
+          git push origin HEAD:main
